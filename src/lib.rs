@@ -13,8 +13,11 @@
 #[macro_use]
 mod macros;
 
+pub mod cdata;
+pub mod char_data;
 pub mod error;
 pub mod name;
 pub mod ncname;
 pub mod qname;
+pub mod text;
 pub(crate) mod utils;
