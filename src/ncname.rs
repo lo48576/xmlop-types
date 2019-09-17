@@ -8,8 +8,8 @@ use std::{convert::TryFrom, error, fmt};
 
 use crate::{
     name::{NameStr, NameString},
+    parser::chars::{is_name_char_except_colon, is_name_start_char_except_colon},
     qname::{QnameStr, QnameString},
-    utils::{is_name_char_except_colon, is_name_start_char_except_colon},
 };
 
 /// Error for [`NcnameStr`].

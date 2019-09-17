@@ -6,7 +6,7 @@
 
 use std::{convert::TryFrom, error, fmt};
 
-use crate::utils::{is_name_char, is_name_start_char};
+use crate::parser::chars::{is_name_char, is_name_start_char};
 
 /// Error for `Name`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

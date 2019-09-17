@@ -9,7 +9,7 @@ use std::{convert::TryFrom, error, fmt};
 use crate::{
     name::{NameStr, NameString},
     ncname::{NcnameStr, NcnameString},
-    utils::{is_name_char_except_colon, is_name_start_char_except_colon},
+    parser::chars::{is_name_char_except_colon, is_name_start_char_except_colon},
 };
 
 /// Error for [`QnameStr`].
