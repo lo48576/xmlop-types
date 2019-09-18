@@ -9,6 +9,10 @@ use crate::{
     parser::{Partial, PartialMapWithStr},
 };
 
+pub use self::entity::{EntityRefStr, EntityRefString};
+
+mod entity;
+
 /// Parse result of `Reference`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum ParseResult<T> {
