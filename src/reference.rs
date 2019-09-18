@@ -2,9 +2,11 @@
 //!
 //! See <https://www.w3.org/TR/REC-xml/#NT-Reference>.
 
+use std::{convert::TryFrom, error, fmt};
+
 use crate::{
     name::{self, ParseResult as NameResult},
-    parser::Partial,
+    parser::{Partial, PartialMapWithStr},
 };
 
 /// Parse result of `Reference`.
@@ -22,6 +24,20 @@ pub(crate) enum ParseResult<T> {
     MissingName,
     /// Missing the trailing semicolon.
     MissingSemicolon,
+}
+
+impl<T> ParseResult<T> {
+    /// Returns the `Result` regarding only `Complete` as success.
+    fn into_complete_result(self) -> Result<T, ReferenceError> {
+        match self {
+            Self::Complete(v) => Ok(v),
+            Self::Extra(part) => Err(ReferenceError::ExtraData(part.valid_up_to())),
+            Self::MissingAmpersand => Err(ReferenceError::MissingAmpersand),
+            Self::MissingCharacterCode => Err(ReferenceError::MissingCharacterCode),
+            Self::MissingName => Err(ReferenceError::MissingName),
+            Self::MissingSemicolon => Err(ReferenceError::MissingSemicolon),
+        }
+    }
 }
 
 /// Parses the given string as reference.
@@ -93,6 +109,22 @@ pub(crate) fn parse_raw(s: &str) -> ParseResult<RefereneceType> {
     ParseResult::Complete(ty)
 }
 
+/// Parses the given string as `Reference`.
+fn parse(s: &str) -> ParseResult<&ReferenceStr> {
+    match parse_raw(s) {
+        ParseResult::Complete(_) => {
+            ParseResult::Complete(unsafe { ReferenceStr::new_unchecked(s) })
+        }
+        ParseResult::Extra(part) => ParseResult::Extra(
+            part.map_with_str(s, |_, s| unsafe { ReferenceStr::new_unchecked(s) }),
+        ),
+        ParseResult::MissingAmpersand => ParseResult::MissingAmpersand,
+        ParseResult::MissingCharacterCode => ParseResult::MissingCharacterCode,
+        ParseResult::MissingName => ParseResult::MissingName,
+        ParseResult::MissingSemicolon => ParseResult::MissingSemicolon,
+    }
+}
+
 /// Type of character reference and entity reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[allow(dead_code)]
@@ -103,6 +135,134 @@ pub(crate) enum RefereneceType {
     Dec,
     /// Character reference with hexadecimal.
     Hex,
+}
+
+/// Error for reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ReferenceError {
+    /// Extra data follows.
+    ///
+    /// `usize` field is the first byte position of the extra data after `]]>`.
+    ExtraData(usize),
+    /// Missing the leading ampersand.
+    MissingAmpersand,
+    /// Missing character code.
+    MissingCharacterCode,
+    /// Missing entity name.
+    MissingName,
+    /// Missing the trailing semicolon.
+    MissingSemicolon,
+}
+
+impl error::Error for ReferenceError {}
+
+impl fmt::Display for ReferenceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReferenceError::ExtraData(pos) => write!(f, "Extra following data at index {}", pos),
+            ReferenceError::MissingAmpersand => f.write_str("Missing ampersand"),
+            ReferenceError::MissingCharacterCode => f.write_str("Missing character code"),
+            ReferenceError::MissingName => f.write_str("Missing entity name"),
+            ReferenceError::MissingSemicolon => f.write_str("Missing semicolon"),
+        }
+    }
+}
+
+/// String slice for `Reference`.
+///
+/// See module documentation for detail.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct ReferenceStr(str);
+
+impl ReferenceStr {
+    /// Creates a new `&ReferenceStr` if the given string is valid.
+    ///
+    /// ```
+    /// # use xmlop_types::reference::{ReferenceError, ReferenceStr};
+    /// assert!(ReferenceStr::new_checked("&lt;").is_ok());
+    /// assert!(ReferenceStr::new_checked("&valid-reference;").is_ok());
+    /// assert!(ReferenceStr::new_checked("&#60;").is_ok());
+    /// assert!(ReferenceStr::new_checked("&#x3c;").is_ok());
+    /// assert!(ReferenceStr::new_checked("&#x3C;").is_ok());
+    /// assert!(ReferenceStr::new_checked("&#x10FFFF;").is_ok());
+    ///
+    /// assert_eq!(ReferenceStr::new_checked("&lt;foo"), Err(ReferenceError::ExtraData(4)));
+    /// assert_eq!(ReferenceStr::new_checked("&#60;foo"), Err(ReferenceError::ExtraData(5)));
+    /// assert_eq!(ReferenceStr::new_checked("&#x3c;foo"), Err(ReferenceError::ExtraData(6)));
+    /// assert_eq!(ReferenceStr::new_checked("&#x3C;foo"), Err(ReferenceError::ExtraData(6)));
+    /// assert_eq!(ReferenceStr::new_checked(""), Err(ReferenceError::MissingAmpersand));
+    /// assert_eq!(ReferenceStr::new_checked("foo"), Err(ReferenceError::MissingAmpersand));
+    /// assert_eq!(ReferenceStr::new_checked("foo&bar;"), Err(ReferenceError::MissingAmpersand));
+    /// assert_eq!(ReferenceStr::new_checked("&#zzz;"), Err(ReferenceError::MissingCharacterCode));
+    /// assert_eq!(ReferenceStr::new_checked("&#xzzz;"), Err(ReferenceError::MissingCharacterCode));
+    /// assert_eq!(ReferenceStr::new_checked("&"), Err(ReferenceError::MissingName));
+    /// assert_eq!(ReferenceStr::new_checked("&;"), Err(ReferenceError::MissingName));
+    /// assert_eq!(ReferenceStr::new_checked("& foo;"), Err(ReferenceError::MissingName));
+    /// assert_eq!(ReferenceStr::new_checked("&foo"), Err(ReferenceError::MissingSemicolon));
+    /// assert_eq!(ReferenceStr::new_checked("&a b;"), Err(ReferenceError::MissingSemicolon));
+    /// assert_eq!(ReferenceStr::new_checked("&#6zzz;"), Err(ReferenceError::MissingSemicolon));
+    /// assert_eq!(ReferenceStr::new_checked("&#xazzz;"), Err(ReferenceError::MissingSemicolon));
+    /// ```
+    pub fn new_checked(s: &str) -> Result<&Self, ReferenceError> {
+        <&Self>::try_from(s)
+    }
+
+    /// Creates a new `&ReferenceStr` assuming the given string is valid.
+    ///
+    /// # Panics
+    ///
+    /// This panics if the given string is not valid reference.
+    /// If you are not sure the string is valid, you should use [`new_checked()`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use xmlop_types::reference::ReferenceStr;
+    /// let s = ReferenceStr::new("&valid-reference;");
+    /// ```
+    ///
+    /// [`new_checked()`]: #method.new_checked
+    pub fn new(s: &str) -> &Self {
+        <&Self>::try_from(s)
+            .unwrap_or_else(|e| panic!("The given string is not valid reference: {}", e))
+    }
+
+    /// Creates a new `&ReferenceStr` without validation.
+    ///
+    /// # Safety
+    ///
+    /// The given string should be valid reference content.
+    pub unsafe fn new_unchecked(s: &str) -> &Self {
+        &*(s as *const str as *const Self)
+    }
+
+    /// Returns the string slice.
+    pub fn as_str(&self) -> &str {
+        self.as_ref()
+    }
+}
+
+/// Owned string for `Reference`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ReferenceString(Box<ReferenceStr>);
+
+impl_string_types! {
+    owned: ReferenceString,
+    slice: ReferenceStr,
+    error_slice: ReferenceError,
+    parse: parse,
+    slice_new_unchecked: ReferenceStr::new_unchecked,
+}
+
+impl_string_cmp! {
+    owned: ReferenceString,
+    slice: ReferenceStr,
+}
+
+impl_string_cmp_to_string! {
+    owned: ReferenceString,
+    slice: ReferenceStr,
 }
 
 #[cfg(test)]
