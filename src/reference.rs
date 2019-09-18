@@ -9,8 +9,12 @@ use crate::{
     parser::{Partial, PartialMapWithStr},
 };
 
-pub use self::entity::{EntityRefStr, EntityRefString};
+pub use self::{
+    char::{CharRefStr, CharRefString},
+    entity::{EntityRefStr, EntityRefString},
+};
 
+mod char;
 mod entity;
 
 /// Parse result of `Reference`.
