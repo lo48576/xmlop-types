@@ -14,10 +14,12 @@
 mod macros;
 
 pub mod cdata;
+pub mod cdata_section;
 pub mod char_data;
 pub mod error;
 pub mod name;
 pub mod ncname;
 pub(crate) mod parser;
 pub mod qname;
+pub(crate) mod reference;
 pub mod text;

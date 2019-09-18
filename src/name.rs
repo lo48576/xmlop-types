@@ -6,7 +6,62 @@
 
 use std::{convert::TryFrom, error, fmt};
 
-use crate::parser::chars::{is_name_char, is_name_start_char};
+use crate::parser::{
+    chars::{is_name_char, is_name_start_char},
+    Partial, PartialMapWithStr,
+};
+
+/// Parse result of `Name`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum ParseResult<T> {
+    /// Completely parsed.
+    Complete(T),
+    /// Empty value.
+    Empty,
+    /// Invalid character.
+    InvalidCharacter(Option<Partial<T>>),
+}
+
+impl<T> ParseResult<T> {
+    /// Returns the `Result` regarding only `Complete` as success.
+    fn into_complete_result(self) -> Result<T, NameError> {
+        match self {
+            Self::Complete(v) => Ok(v),
+            Self::Empty => Err(NameError::Empty),
+            Self::InvalidCharacter(part) => Err(NameError::InvalidCharacter(
+                part.map_or(0, |part| part.valid_up_to()),
+            )),
+        }
+    }
+}
+
+/// Parses the given string as `Name`.
+pub(crate) fn parse_raw(s: &str) -> ParseResult<()> {
+    let mut chars = s.char_indices();
+    match chars.next() {
+        Some((_, first)) if !is_name_start_char(first) => {
+            return ParseResult::InvalidCharacter(None);
+        }
+        Some(_) => {}
+        None => return ParseResult::Empty,
+    }
+    if let Some((pos, _)) = chars.find(|(_, c)| !is_name_char(*c)) {
+        return ParseResult::InvalidCharacter(Some(Partial::new((), pos)));
+    }
+
+    ParseResult::Complete(())
+}
+
+/// Parses the given string as `Name`.
+fn parse(s: &str) -> ParseResult<&NameStr> {
+    match parse_raw(s) {
+        ParseResult::Complete(()) => ParseResult::Complete(unsafe { NameStr::new_unchecked(s) }),
+        ParseResult::Empty => ParseResult::Empty,
+        ParseResult::InvalidCharacter(part) => ParseResult::InvalidCharacter(
+            part.map_with_str(s, |_, s| unsafe { NameStr::new_unchecked(s) }),
+        ),
+    }
+}
 
 /// Error for `Name`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -38,23 +93,6 @@ impl fmt::Display for NameError {
 pub struct NameStr(str);
 
 impl NameStr {
-    /// Validates the given string, and returns `Ok(())` if the string is valid.
-    fn validate(s: &str) -> Result<(), NameError> {
-        let mut chars = s.char_indices();
-        match chars.next() {
-            Some((_index, first)) => {
-                if !is_name_start_char(first) {
-                    return Err(NameError::InvalidCharacter(0));
-                }
-            }
-            None => return Err(NameError::Empty),
-        }
-        if let Some((index, _char)) = chars.find(|(_, c)| !is_name_char(*c)) {
-            return Err(NameError::InvalidCharacter(index));
-        }
-        Ok(())
-    }
-
     /// Creates a new `&NameStr` if the given string is valid.
     ///
     /// ```
@@ -117,7 +155,7 @@ impl_string_types! {
     owned: NameString,
     slice: NameStr,
     error_slice: NameError,
-    validate: NameStr::validate,
+    parse: parse,
     slice_new_unchecked: NameStr::new_unchecked,
 }
 
@@ -129,4 +167,35 @@ impl_string_cmp! {
 impl_string_cmp_to_string! {
     owned: NameString,
     slice: NameStr,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use ParseResult::{Complete, Empty, InvalidCharacter};
+
+    #[test]
+    fn test_parser() {
+        assert_eq!(parse_raw("Valid-Name"), Complete(()));
+
+        assert_eq!(parse_raw(""), Empty);
+        assert_eq!(parse_raw("012InvalidName"), InvalidCharacter(None));
+        assert_eq!(
+            parse_raw("foo bar"),
+            InvalidCharacter(Some(Partial::new((), 3)))
+        );
+        assert_eq!(
+            parse_raw("foo>bar"),
+            InvalidCharacter(Some(Partial::new((), 3)))
+        );
+        assert_eq!(
+            parse_raw("foo<bar"),
+            InvalidCharacter(Some(Partial::new((), 3)))
+        );
+        assert_eq!(
+            parse_raw("foo&bar"),
+            InvalidCharacter(Some(Partial::new((), 3)))
+        );
+    }
 }

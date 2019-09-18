@@ -8,9 +8,96 @@ use std::{convert::TryFrom, error, fmt};
 
 use crate::{
     name::{NameStr, NameString},
-    ncname::{NcnameStr, NcnameString},
-    parser::chars::{is_name_char_except_colon, is_name_start_char_except_colon},
+    ncname::{self, NcnameStr, NcnameString, ParseResult as NcnameResult},
+    parser::{Partial, PartialMapWithStr},
 };
+
+/// Parse result of `Name`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum ParseResult<T> {
+    /// Completely parsed.
+    Complete(T),
+    /// Empty value.
+    Empty,
+    /// Local part is empty, i.e. the last character was colon.
+    EmptyLocalPart(Partial<T>),
+    /// Extra colon is found.
+    ExtraColon(Partial<T>),
+    /// Invalid character.
+    ///
+    /// `usize` field is the first byte position of the invalid character.
+    InvalidCharacter(Option<Partial<T>>, usize),
+}
+
+impl<T> ParseResult<T> {
+    /// Returns the `Result` regarding only `Complete` as success.
+    fn into_complete_result(self) -> Result<T, QnameError> {
+        match self {
+            Self::Complete(v) => Ok(v),
+            Self::Empty => Err(QnameError::Empty),
+            Self::EmptyLocalPart(_) => Err(QnameError::EmptyLocalPart),
+            Self::ExtraColon(part) => Err(QnameError::ExtraColon(part.valid_up_to())),
+            Self::InvalidCharacter(_part, err_pos) => Err(QnameError::InvalidCharacter(err_pos)),
+        }
+    }
+}
+
+/// Parses the given string as `QName`.
+fn parse_raw(s: &str) -> ParseResult<()> {
+    // Parse the first `NCName`.
+    let first_len = match ncname::parse_raw(s) {
+        NcnameResult::Complete(()) => return ParseResult::Complete(()),
+        NcnameResult::Empty => return ParseResult::Empty,
+        NcnameResult::InvalidCharacter(None) => return ParseResult::InvalidCharacter(None, 0),
+        NcnameResult::InvalidCharacter(Some(part)) => {
+            let first_len = part.valid_up_to();
+            if s.as_bytes()[first_len] != b':' {
+                return ParseResult::InvalidCharacter(Some(part), first_len);
+            }
+            first_len
+        }
+    };
+
+    assert_eq!(s.as_bytes()[first_len], b':');
+    // Offest of the local part.
+    let local_offset = first_len + 1;
+    let rest = &s[local_offset..];
+    // Parse the second `NCName`.
+    match ncname::parse_raw(rest) {
+        NcnameResult::Complete(()) => ParseResult::Complete(()),
+        NcnameResult::Empty => ParseResult::EmptyLocalPart(Partial::new((), first_len)),
+        NcnameResult::InvalidCharacter(None) => {
+            ParseResult::InvalidCharacter(Some(Partial::new((), first_len)), local_offset)
+        }
+        NcnameResult::InvalidCharacter(Some(part)) => {
+            let len = local_offset + part.valid_up_to();
+            let partial = Partial::new((), len);
+            if s.as_bytes()[len] == b':' {
+                ParseResult::ExtraColon(partial)
+            } else {
+                ParseResult::InvalidCharacter(Some(partial), len)
+            }
+        }
+    }
+}
+
+/// Parses the given string as `QName`.
+fn parse(s: &str) -> ParseResult<&QnameStr> {
+    match parse_raw(s) {
+        ParseResult::Complete(()) => ParseResult::Complete(unsafe { QnameStr::new_unchecked(s) }),
+        ParseResult::Empty => ParseResult::Empty,
+        ParseResult::EmptyLocalPart(part) => ParseResult::EmptyLocalPart(
+            part.map_with_str(s, |_, s| unsafe { QnameStr::new_unchecked(s) }),
+        ),
+        ParseResult::ExtraColon(part) => ParseResult::ExtraColon(
+            part.map_with_str(s, |_, s| unsafe { QnameStr::new_unchecked(s) }),
+        ),
+        ParseResult::InvalidCharacter(part, err_pos) => ParseResult::InvalidCharacter(
+            part.map_with_str(s, |_, s| unsafe { QnameStr::new_unchecked(s) }),
+            err_pos,
+        ),
+    }
+}
 
 /// Error for [`QnameStr`].
 ///
@@ -19,18 +106,16 @@ use crate::{
 pub enum QnameError {
     /// The string is empty.
     Empty,
-    /// The string has an invaild character.
-    ///
-    /// `usize` field is the first byte position of the invalid character.
-    InvalidCharacter(usize),
     /// Extra colon is found.
     ///
     /// `usize` field is the first byte position of the second colon.
     ExtraColon(usize),
-    /// Prefix is empty, i.e. the first character was colon.
-    EmptyPrefix,
     /// Local part is empty, i.e. the last character was colon.
     EmptyLocalPart,
+    /// The string has an invaild character.
+    ///
+    /// `usize` field is the first byte position of the invalid character.
+    InvalidCharacter(usize),
 }
 
 impl error::Error for QnameError {}
@@ -41,7 +126,6 @@ impl fmt::Display for QnameError {
             QnameError::Empty => write!(f, "empty string"),
             QnameError::InvalidCharacter(pos) => write!(f, "invalid character at index {}", pos),
             QnameError::ExtraColon(pos) => write!(f, "extra colon found at index {}", pos),
-            QnameError::EmptyPrefix => write!(f, "empty prefix"),
             QnameError::EmptyLocalPart => write!(f, "empty local part"),
         }
     }
@@ -55,47 +139,6 @@ impl fmt::Display for QnameError {
 pub struct QnameStr(str);
 
 impl QnameStr {
-    /// Validates the given string, and returns `Ok(())` if the string is valid.
-    fn validate(s: &str) -> Result<(), QnameError> {
-        let mut chars = s.char_indices();
-        match chars.next() {
-            Some((_index, first)) => {
-                if first == ':' {
-                    return Err(QnameError::EmptyPrefix);
-                }
-                if !is_name_start_char_except_colon(first) {
-                    return Err(QnameError::InvalidCharacter(0));
-                }
-            }
-            None => return Err(QnameError::Empty),
-        }
-
-        let mut found_colon = false;
-        for (index, c) in chars {
-            if c == ':' {
-                if found_colon {
-                    // This is the second colon.
-                    return Err(QnameError::ExtraColon(index));
-                }
-                found_colon = true;
-                continue;
-            }
-            if !is_name_char_except_colon(c) {
-                return Err(QnameError::InvalidCharacter(index));
-            }
-        }
-
-        let last = s
-            .chars()
-            .next_back()
-            .unwrap_or_else(|| unreachable!("`s` is not empty"));
-        if last == ':' {
-            return Err(QnameError::EmptyLocalPart);
-        }
-
-        Ok(())
-    }
-
     /// Creates a new `&QnameStr` if the given string is valid.
     ///
     /// ```
@@ -106,8 +149,8 @@ impl QnameStr {
     /// assert_eq!(QnameStr::new_checked(""), Err(QnameError::Empty));
     /// assert_eq!(QnameStr::new_checked("012InvalidQName"), Err(QnameError::InvalidCharacter(0)));
     /// assert_eq!(QnameStr::new_checked("foo bar"), Err(QnameError::InvalidCharacter(3)));
+    /// assert_eq!(QnameStr::new_checked(":foo"), Err(QnameError::InvalidCharacter(0)));
     /// assert_eq!(QnameStr::new_checked("foo:bar:baz"), Err(QnameError::ExtraColon(7)));
-    /// assert_eq!(QnameStr::new_checked(":foo"), Err(QnameError::EmptyPrefix));
     /// assert_eq!(QnameStr::new_checked("foo:"), Err(QnameError::EmptyLocalPart));
     /// ```
     pub fn new_checked(s: &str) -> Result<&Self, QnameError> {
@@ -319,7 +362,7 @@ impl_string_types! {
     owned: QnameString,
     slice: QnameStr,
     error_slice: QnameError,
-    validate: QnameStr::validate,
+    parse: parse,
     slice_new_unchecked: QnameStr::new_unchecked,
 }
 
@@ -331,4 +374,52 @@ impl_string_cmp! {
 impl_string_cmp_to_string! {
     owned: QnameString,
     slice: QnameStr,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use ParseResult::{Complete, Empty, EmptyLocalPart, ExtraColon, InvalidCharacter};
+
+    #[test]
+    fn test_parser() {
+        assert_eq!(parse_raw("Valid-QName"), Complete(()));
+        assert_eq!(parse_raw("Valid:QName"), Complete(()));
+
+        assert_eq!(parse_raw(""), Empty);
+        assert_eq!(parse_raw("foo:"), EmptyLocalPart(Partial::new((), 3)));
+        assert_eq!(parse_raw("foo:bar:baz"), ExtraColon(Partial::new((), 7)));
+
+        assert_eq!(parse_raw("012InvalidQame"), InvalidCharacter(None, 0));
+        assert_eq!(
+            parse_raw("foo bar"),
+            InvalidCharacter(Some(Partial::new((), 3)), 3)
+        );
+        assert_eq!(
+            parse_raw("foo>bar"),
+            InvalidCharacter(Some(Partial::new((), 3)), 3)
+        );
+        assert_eq!(
+            parse_raw("foo<bar"),
+            InvalidCharacter(Some(Partial::new((), 3)), 3)
+        );
+        assert_eq!(
+            parse_raw("foo&bar"),
+            InvalidCharacter(Some(Partial::new((), 3)), 3)
+        );
+        assert_eq!(parse_raw(":foo"), InvalidCharacter(None, 0));
+        assert_eq!(
+            parse_raw("foo::"),
+            InvalidCharacter(Some(Partial::new((), 3)), 4)
+        );
+        assert_eq!(
+            parse_raw("foo:0"),
+            InvalidCharacter(Some(Partial::new((), 3)), 4)
+        );
+        assert_eq!(
+            parse_raw("foo:bar<"),
+            InvalidCharacter(Some(Partial::new((), 7)), 7)
+        );
+    }
 }
