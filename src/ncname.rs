@@ -8,9 +8,64 @@ use std::{convert::TryFrom, error, fmt};
 
 use crate::{
     name::{NameStr, NameString},
+    parser::{
+        chars::{is_name_char_except_colon, is_name_start_char_except_colon},
+        Partial, PartialMapWithStr,
+    },
     qname::{QnameStr, QnameString},
-    utils::{is_name_char_except_colon, is_name_start_char_except_colon},
 };
+
+/// Parse result of `NCName`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum ParseResult<T> {
+    /// Completely parsed.
+    Complete(T),
+    /// Empty value.
+    Empty,
+    /// Invalid character.
+    InvalidCharacter(Option<Partial<T>>),
+}
+
+impl<T> ParseResult<T> {
+    /// Returns the `Result` regarding only `Complete` as success.
+    fn into_complete_result(self) -> Result<T, NcnameError> {
+        match self {
+            Self::Complete(v) => Ok(v),
+            Self::Empty => Err(NcnameError::Empty),
+            Self::InvalidCharacter(part) => Err(NcnameError::InvalidCharacter(
+                part.map_or(0, |part| part.valid_up_to()),
+            )),
+        }
+    }
+}
+
+/// Parses the given string as `NCName`.
+pub(crate) fn parse_raw(s: &str) -> ParseResult<()> {
+    let mut chars = s.char_indices();
+    match chars.next() {
+        Some((_, first)) if !is_name_start_char_except_colon(first) => {
+            return ParseResult::InvalidCharacter(None)
+        }
+        Some(_) => {}
+        None => return ParseResult::Empty,
+    }
+    if let Some((pos, _)) = chars.find(|(_, c)| !is_name_char_except_colon(*c)) {
+        return ParseResult::InvalidCharacter(Some(Partial::new((), pos)));
+    }
+
+    ParseResult::Complete(())
+}
+
+/// Parses the given string as `NCName`.
+fn parse(s: &str) -> ParseResult<&NcnameStr> {
+    match parse_raw(s) {
+        ParseResult::Complete(()) => ParseResult::Complete(unsafe { NcnameStr::new_unchecked(s) }),
+        ParseResult::Empty => ParseResult::Empty,
+        ParseResult::InvalidCharacter(part) => ParseResult::InvalidCharacter(
+            part.map_with_str(s, |_, s| unsafe { NcnameStr::new_unchecked(s) }),
+        ),
+    }
+}
 
 /// Error for [`NcnameStr`].
 ///
@@ -44,23 +99,6 @@ impl fmt::Display for NcnameError {
 pub struct NcnameStr(str);
 
 impl NcnameStr {
-    /// Validates the given string, and returns `Ok(())` if the string is valid.
-    fn validate(s: &str) -> Result<(), NcnameError> {
-        let mut chars = s.char_indices();
-        match chars.next() {
-            Some((_index, first)) => {
-                if !is_name_start_char_except_colon(first) {
-                    return Err(NcnameError::InvalidCharacter(0));
-                }
-            }
-            None => return Err(NcnameError::Empty),
-        }
-        if let Some((index, _char)) = chars.find(|(_, c)| !is_name_char_except_colon(*c)) {
-            return Err(NcnameError::InvalidCharacter(index));
-        }
-        Ok(())
-    }
-
     /// Creates a new `&NcnameStr` if the given string is valid.
     ///
     /// ```
@@ -190,7 +228,7 @@ impl_string_types! {
     owned: NcnameString,
     slice: NcnameStr,
     error_slice: NcnameError,
-    validate: NcnameStr::validate,
+    parse: parse,
     slice_new_unchecked: NcnameStr::new_unchecked,
 }
 
@@ -202,4 +240,39 @@ impl_string_cmp! {
 impl_string_cmp_to_string! {
     owned: NcnameString,
     slice: NcnameStr,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use ParseResult::{Complete, Empty, InvalidCharacter};
+
+    #[test]
+    fn test_parser() {
+        assert_eq!(parse_raw("Valid-NCName"), Complete(()));
+
+        assert_eq!(parse_raw(""), Empty);
+        assert_eq!(parse_raw("012InvalidNCName"), InvalidCharacter(None));
+        assert_eq!(
+            parse_raw("foo:bar"),
+            InvalidCharacter(Some(Partial::new((), 3)))
+        );
+        assert_eq!(
+            parse_raw("foo bar"),
+            InvalidCharacter(Some(Partial::new((), 3)))
+        );
+        assert_eq!(
+            parse_raw("foo>bar"),
+            InvalidCharacter(Some(Partial::new((), 3)))
+        );
+        assert_eq!(
+            parse_raw("foo<bar"),
+            InvalidCharacter(Some(Partial::new((), 3)))
+        );
+        assert_eq!(
+            parse_raw("foo&bar"),
+            InvalidCharacter(Some(Partial::new((), 3)))
+        );
+    }
 }

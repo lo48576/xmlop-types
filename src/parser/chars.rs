@@ -1,5 +1,20 @@
 //! Common utilities not to be exported outside of the crate.
 
+/// Checks if the given character is [`Char`].
+///
+/// [`Char`]: https://www.w3.org/TR/xml/#NT-Char
+pub(crate) fn is_xml_char(c: char) -> bool {
+    match c {
+        '\u{9}'
+        | '\u{A}'
+        | '\u{D}'
+        | '\u{20}'..='\u{D7FF}'
+        | '\u{E000}'..='\u{FFFD}'
+        | '\u{10000}'..='\u{10FFFF}' => true,
+        _ => false,
+    }
+}
+
 /// Checks if the given character is [`NameChar`] but not a colon (`:`).
 ///
 /// [`NameChar`]: https://www.w3.org/TR/xml/#NT-NameChar

@@ -6,6 +6,94 @@
 
 use std::{convert::TryFrom, error, fmt};
 
+use crate::parser::{Partial, PartialMapWithStr};
+
+/// Parse result of `CharData`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum ParseResult<T> {
+    /// Completely parsed.
+    Complete(T),
+    /// CDATA section closed unexpectedly.
+    CdataSectionClosed(Partial<T>),
+    /// Unexpected ampersand.
+    UnexpectedAmpersand(Partial<T>),
+    /// Unexpected lt (`<`) symbol.
+    UnexpectedLt(Partial<T>),
+}
+
+impl<T> ParseResult<T> {
+    /// Returns the `Result` regarding only `Complete` as success.
+    fn into_complete_result(self) -> Result<T, CharDataError> {
+        match self {
+            Self::Complete(v) => Ok(v),
+            Self::CdataSectionClosed(part) => {
+                Err(CharDataError::CdataSectionClosed(part.valid_up_to()))
+            }
+            Self::UnexpectedAmpersand(part) => {
+                Err(CharDataError::UnexpectedAmpersand(part.valid_up_to()))
+            }
+            Self::UnexpectedLt(part) => Err(CharDataError::UnexpectedLt(part.valid_up_to())),
+        }
+    }
+}
+
+/// Parses the given string as `CharData`.
+pub(crate) fn parse_raw(s: &str) -> ParseResult<()> {
+    // Existence of stray `>` is syntactically allowed by the spec (see [`CharData`]), but it is
+    // strongly discouraged.
+    //
+    // > The right angle bracket (`>`) may be represented using the string "`&gt;`", and MUST, for
+    // > compatibility, be escaped using either "`&gt;`" or a character reference when it appears in
+    // > the string "`]]>`" in content, when that string is not marking the end of a CDATA section.
+    // >
+    // > --- <https://www.w3.org/TR/2008/REC-xml-20081126/#syntax>
+    let mut rest = s;
+    while let Some(rest_pos) = rest
+        .as_bytes()
+        .iter()
+        .position(|&b| b == b'&' || b == b'<' || b == b']')
+    {
+        let pos = s.len() - rest.len() + rest_pos;
+        match rest.as_bytes()[rest_pos] {
+            b'&' => {
+                return ParseResult::UnexpectedAmpersand(Partial::new((), pos));
+            }
+            b'<' => {
+                let pos = s.len() - rest.len() + rest_pos;
+                return ParseResult::UnexpectedLt(Partial::new((), pos));
+            }
+            b']' => {
+                let next_rest = &s[(pos + 1)..];
+                if next_rest.starts_with("]>") {
+                    return ParseResult::CdataSectionClosed(Partial::new((), pos));
+                }
+                rest = next_rest;
+            }
+            _ => unreachable!("Not finding that"),
+        }
+    }
+
+    ParseResult::Complete(())
+}
+
+/// Parses the given string as `CharData`.
+fn parse(s: &str) -> ParseResult<&CharDataStr> {
+    match parse_raw(s) {
+        ParseResult::Complete(()) => {
+            ParseResult::Complete(unsafe { CharDataStr::new_unchecked(s) })
+        }
+        ParseResult::CdataSectionClosed(part) => ParseResult::CdataSectionClosed(
+            part.map_with_str(s, |_, s| unsafe { CharDataStr::new_unchecked(s) }),
+        ),
+        ParseResult::UnexpectedAmpersand(part) => ParseResult::UnexpectedAmpersand(
+            part.map_with_str(s, |_, s| unsafe { CharDataStr::new_unchecked(s) }),
+        ),
+        ParseResult::UnexpectedLt(part) => ParseResult::UnexpectedLt(
+            part.map_with_str(s, |_, s| unsafe { CharDataStr::new_unchecked(s) }),
+        ),
+    }
+}
+
 /// Error for `CharData`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CharDataError {
@@ -49,30 +137,6 @@ impl fmt::Display for CharDataError {
 pub struct CharDataStr(str);
 
 impl CharDataStr {
-    /// Validates the given string, and returns `Ok(())` if the string is valid.
-    fn validate(s: &str) -> Result<(), CharDataError> {
-        let invalid_char = s.find(|c| c == '&' || c == '<');
-        let cdata_section_close = s.find("]]>");
-
-        match (invalid_char, cdata_section_close) {
-            (None, Some(cdata_close_pos)) => {
-                Err(CharDataError::CdataSectionClosed(cdata_close_pos))
-            }
-            (Some(char_pos), Some(cdata_close_pos)) if char_pos > cdata_close_pos => {
-                Err(CharDataError::CdataSectionClosed(cdata_close_pos))
-            }
-            (Some(char_pos), _) => {
-                let err = if s.as_bytes()[char_pos] == b'&' {
-                    CharDataError::UnexpectedAmpersand(char_pos)
-                } else {
-                    CharDataError::UnexpectedLt(char_pos)
-                };
-                Err(err)
-            }
-            (None, None) => Ok(()),
-        }
-    }
-
     /// Creates a new `&CharDataStr` if the given string is valid.
     ///
     /// ```
@@ -143,7 +207,7 @@ impl_string_types! {
     owned: CharDataString,
     slice: CharDataStr,
     error_slice: CharDataError,
-    validate: CharDataStr::validate,
+    parse: parse,
     slice_new_unchecked: CharDataStr::new_unchecked,
 }
 
@@ -155,4 +219,44 @@ impl_string_cmp! {
 impl_string_cmp_to_string! {
     owned: CharDataString,
     slice: CharDataStr,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use ParseResult::{CdataSectionClosed, Complete, UnexpectedAmpersand, UnexpectedLt};
+
+    #[test]
+    fn test_parser() {
+        assert_eq!(parse_raw(""), Complete(()));
+        assert_eq!(parse_raw("valid CharData"), Complete(()));
+        // Existence of stray `>` is syntactically allowed by the spec (see [`CharData`]), but it is
+        // strongly discouraged.
+        //
+        // > The right angle bracket (`>`) may be represented using the string "`&gt;`", and MUST,
+        // > for compatibility, be escaped using either "`&gt;`" or a character reference when it
+        // > appears in > the string "`]]>`" in content, when that string is not marking the end of
+        // > a CDATA section.
+        // >
+        // > --- <https://www.w3.org/TR/2008/REC-xml-20081126/#syntax>
+        assert_eq!(parse_raw("foo>bar"), Complete(()));
+        assert_eq!(parse_raw("]>"), Complete(()));
+
+        assert_eq!(parse_raw("]]>"), CdataSectionClosed(Partial::new((), 0)));
+        assert_eq!(parse_raw("]]]>"), CdataSectionClosed(Partial::new((), 1)));
+        assert_eq!(parse_raw("foo]]>"), CdataSectionClosed(Partial::new((), 3)));
+        assert_eq!(parse_raw("&lt;"), UnexpectedAmpersand(Partial::new((), 0)));
+        assert_eq!(
+            parse_raw("foo&bar"),
+            UnexpectedAmpersand(Partial::new((), 3))
+        );
+        assert_eq!(
+            parse_raw("foo&lt;bar"),
+            UnexpectedAmpersand(Partial::new((), 3))
+        );
+        assert_eq!(parse_raw("foo<bar"), UnexpectedLt(Partial::new((), 3)));
+        assert_eq!(parse_raw("foo<elem />"), UnexpectedLt(Partial::new((), 3)));
+        assert_eq!(parse_raw("foo<elem />"), UnexpectedLt(Partial::new((), 3)));
+    }
 }

@@ -6,6 +6,60 @@
 
 use std::{convert::TryFrom, error, fmt};
 
+use crate::parser::{chars::is_xml_char, Partial, PartialMapWithStr};
+
+/// Parse result of `CData`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum ParseResult<T> {
+    /// Completely parsed.
+    Complete(T),
+    /// CDATA section closed unexpectedly.
+    CdataSectionClosed(Partial<T>),
+    /// Invalid Character.
+    InvalidCharacter(Partial<T>),
+}
+
+impl<T> ParseResult<T> {
+    /// Returns the `Result` regarding only `Complete` as success.
+    fn into_complete_result(self) -> Result<T, CdataError> {
+        match self {
+            Self::Complete(v) => Ok(v),
+            Self::CdataSectionClosed(part) => {
+                Err(CdataError::CdataSectionClosed(part.valid_up_to()))
+            }
+            Self::InvalidCharacter(part) => Err(CdataError::InvalidCharacter(part.valid_up_to())),
+        }
+    }
+}
+
+/// Parses the given string as `CData`.
+pub(crate) fn parse_raw(s: &str) -> ParseResult<()> {
+    let mut chars = s.char_indices();
+    while let Some((pos, c)) = chars.next() {
+        if !is_xml_char(c) {
+            return ParseResult::InvalidCharacter(Partial::new((), pos));
+        }
+        if c == ']' && chars.as_str().starts_with("]>") {
+            return ParseResult::CdataSectionClosed(Partial::new((), pos));
+        }
+    }
+
+    ParseResult::Complete(())
+}
+
+/// Parses the given string as `CData`.
+fn parse(s: &str) -> ParseResult<&CdataStr> {
+    match parse_raw(s) {
+        ParseResult::Complete(()) => ParseResult::Complete(unsafe { CdataStr::new_unchecked(s) }),
+        ParseResult::CdataSectionClosed(part) => ParseResult::CdataSectionClosed(
+            part.map_with_str(s, |_, s| unsafe { CdataStr::new_unchecked(s) }),
+        ),
+        ParseResult::InvalidCharacter(part) => ParseResult::InvalidCharacter(
+            part.map_with_str(s, |_, s| unsafe { CdataStr::new_unchecked(s) }),
+        ),
+    }
+}
+
 /// Error for `CData`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CdataError {
@@ -13,6 +67,10 @@ pub enum CdataError {
     ///
     /// `usize` field is the first byte position of the closing sequence `]]>`.
     CdataSectionClosed(usize),
+    /// Found invalid character.
+    ///
+    /// `usize` field is the first byte position of the invalid character.
+    InvalidCharacter(usize),
 }
 
 impl error::Error for CdataError {}
@@ -23,6 +81,7 @@ impl fmt::Display for CdataError {
             CdataError::CdataSectionClosed(pos) => {
                 write!(f, "Unexpected closing sequence at index {}", pos)
             }
+            CdataError::InvalidCharacter(pos) => write!(f, "Invalid character at index {}", pos),
         }
     }
 }
@@ -35,14 +94,6 @@ impl fmt::Display for CdataError {
 pub struct CdataStr(str);
 
 impl CdataStr {
-    /// Validates the given string, and returns `Ok(())` if the string is valid.
-    fn validate(s: &str) -> Result<(), CdataError> {
-        match s.find("]]>") {
-            Some(pos) => Err(CdataError::CdataSectionClosed(pos)),
-            None => Ok(()),
-        }
-    }
-
     /// Creates a new `&CdataStr` if the given string is valid.
     ///
     /// ```
@@ -108,7 +159,7 @@ impl_string_types! {
     owned: CdataString,
     slice: CdataStr,
     error_slice: CdataError,
-    validate: CdataStr::validate,
+    parse: parse,
     slice_new_unchecked: CdataStr::new_unchecked,
 }
 
@@ -120,4 +171,29 @@ impl_string_cmp! {
 impl_string_cmp_to_string! {
     owned: CdataString,
     slice: CdataStr,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use ParseResult::{CdataSectionClosed, Complete, InvalidCharacter};
+
+    #[test]
+    fn test_parser() {
+        assert_eq!(parse_raw(""), Complete(()));
+        assert_eq!(parse_raw("valid CData"), Complete(()));
+        assert_eq!(parse_raw("foo<bar>baz&qux"), Complete(()));
+
+        assert_eq!(parse_raw("]]>"), CdataSectionClosed(Partial::new((), 0)));
+        assert_eq!(
+            parse_raw("foo]]>bar"),
+            CdataSectionClosed(Partial::new((), 3))
+        );
+        // Vertical tab is not allowed in CDATA section.
+        assert_eq!(
+            parse_raw("vertical\u{B}tab"),
+            InvalidCharacter(Partial::new((), 8))
+        );
+    }
 }

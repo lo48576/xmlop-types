@@ -2,14 +2,149 @@
 //!
 //! `TextStr` and `TextString` contains unprocessed valid `#PCDATA`, which consists of zero or more
 //! entity references, character references, character data (`CData`s), and CDATA sections.
+//!
+//! The text type is subset of [`content`] in the XML spec.
+//!
+//! [`content`]: https://www.w3.org/TR/xml/#NT-content
 
 use std::{convert::TryFrom, error, fmt};
 
-use crate::name::NameStr;
+use crate::{
+    cdata_section::{self, ParseResult as CdataSectionResult},
+    char_data::{self, ParseResult as CharDataResult},
+    parser::{Partial, PartialMapWithStr},
+    reference::{self, ParseResult as ReferenceResult},
+};
+
+/// Parse result of `Text`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum ParseResult<T> {
+    /// Completely parsed.
+    Complete(T),
+    /// CDATA section closed unexpectedly (while not opened).
+    CdataSectionClosed(Partial<T>),
+    /// Invalid use of ampersand (`&`).
+    ///
+    /// This error can be caused by unclosed reference (entity reference and character reference)
+    /// or invalid (non-`Name`) string following `&`.
+    InvalidAmpersand(Partial<T>),
+    /// Invalid character in CDATA section.
+    InvalidCharacterInCdataSection(Partial<T>),
+    /// Unclosed CDATA section.
+    ///
+    /// The first `usize` field is the byte position of the starting `<`.
+    UnclosedCdataSection(Partial<T>),
+    /// Unescaped lt (`<`).
+    ///
+    /// The first `usize` field is the byte position of the unescaped `<`.
+    UnescapedLt(Partial<T>),
+}
+
+impl<T> ParseResult<T> {
+    /// Returns the `Result` regarding only `Complete` as success.
+    fn into_complete_result(self) -> Result<T, TextError> {
+        match self {
+            Self::Complete(v) => Ok(v),
+            Self::CdataSectionClosed(part) => {
+                Err(TextError::CdataSectionClosed(part.valid_up_to()))
+            }
+            Self::InvalidAmpersand(part) => Err(TextError::InvalidAmpersand(part.valid_up_to())),
+            Self::InvalidCharacterInCdataSection(part) => Err(
+                TextError::InvalidCharacterInCdataSection(part.valid_up_to()),
+            ),
+            Self::UnclosedCdataSection(part) => {
+                Err(TextError::UnclosedCdataSection(part.valid_up_to()))
+            }
+            Self::UnescapedLt(part) => Err(TextError::UnescapedLt(part.valid_up_to())),
+        }
+    }
+}
+
+/// Parses the given string as text node.
+fn parse_raw(s: &str) -> ParseResult<()> {
+    if s.is_empty() {
+        return ParseResult::Complete(());
+    }
+    let mut rest = s;
+    loop {
+        assert!(!rest.is_empty());
+        let first = match rest.as_bytes().get(0) {
+            Some(c) => *c,
+            None => return ParseResult::Complete(()),
+        };
+        match first {
+            b'&' => match reference::parse_raw(rest) {
+                ReferenceResult::Complete(_) => return ParseResult::Complete(()),
+                ReferenceResult::Extra(part) => rest = &rest[part.valid_up_to()..],
+                _ => return ParseResult::InvalidAmpersand(Partial::new((), s.len() - rest.len())),
+            },
+            b'<' => match cdata_section::parse_raw(rest) {
+                CdataSectionResult::Complete(_) => return ParseResult::Complete(()),
+                CdataSectionResult::Extra(part) => rest = &rest[part.valid_up_to()..],
+                CdataSectionResult::InvalidCharacter(pos) => {
+                    return ParseResult::InvalidCharacterInCdataSection(Partial::new(
+                        (),
+                        s.len() - rest.len() + pos,
+                    ))
+                }
+                CdataSectionResult::MissingCloseDelimiter => {
+                    return ParseResult::UnclosedCdataSection(Partial::new(
+                        (),
+                        s.len() - rest.len(),
+                    ))
+                }
+                CdataSectionResult::MissingOpenDelimiter => {
+                    return ParseResult::UnescapedLt(Partial::new((), s.len() - rest.len()))
+                }
+            },
+            _ => match char_data::parse_raw(rest) {
+                CharDataResult::Complete(_) => return ParseResult::Complete(()),
+                CharDataResult::CdataSectionClosed(part) => {
+                    return ParseResult::CdataSectionClosed(Partial::new(
+                        (),
+                        s.len() - rest.len() + part.valid_up_to(),
+                    ))
+                }
+                CharDataResult::UnexpectedAmpersand(part) | CharDataResult::UnexpectedLt(part) => {
+                    rest = &rest[part.valid_up_to()..]
+                }
+            },
+        }
+    }
+}
+
+/// Parses the given string as XML text.
+fn parse(s: &str) -> ParseResult<&TextStr> {
+    match parse_raw(s) {
+        ParseResult::Complete(()) => ParseResult::Complete(unsafe { TextStr::new_unchecked(s) }),
+        ParseResult::CdataSectionClosed(part) => ParseResult::CdataSectionClosed(
+            part.map_with_str(s, |_, s| unsafe { TextStr::new_unchecked(s) }),
+        ),
+        ParseResult::InvalidAmpersand(part) => ParseResult::InvalidAmpersand(
+            part.map_with_str(s, |_, s| unsafe { TextStr::new_unchecked(s) }),
+        ),
+        ParseResult::InvalidCharacterInCdataSection(part) => {
+            ParseResult::InvalidCharacterInCdataSection(
+                part.map_with_str(s, |_, s| unsafe { TextStr::new_unchecked(s) }),
+            )
+        }
+        ParseResult::UnclosedCdataSection(part) => ParseResult::UnclosedCdataSection(
+            part.map_with_str(s, |_, s| unsafe { TextStr::new_unchecked(s) }),
+        ),
+        ParseResult::UnescapedLt(part) => ParseResult::UnescapedLt(
+            part.map_with_str(s, |_, s| unsafe { TextStr::new_unchecked(s) }),
+        ),
+    }
+}
 
 /// Error for text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TextError {
+    /// CDATA section closed unexpectedly (while not opened).
+    ///
+    /// The first `usize` field is the first byte position of the CDATA section end delimiter
+    /// `"]]>"`.
+    CdataSectionClosed(usize),
     /// Invalid use of ampersand (`&`).
     ///
     /// This error can be caused by unclosed reference (entity reference and character reference)
@@ -17,14 +152,14 @@ pub enum TextError {
     ///
     /// The first `usize` field is the byte position of the starting `&`.
     InvalidAmpersand(usize),
+    /// Invalid character in CDATA section.
+    ///
+    /// The first `usize` field is the byte position of the invalid character.
+    InvalidCharacterInCdataSection(usize),
     /// Unclosed CDATA section.
     ///
     /// The first `usize` field is the byte position of the starting `<`.
     UnclosedCdataSection(usize),
-    /// Unescaped gt (`>`).
-    ///
-    /// The first `usize` field is the byte position of the unescaped `>`.
-    UnescapedGt(usize),
     /// Unescaped lt (`<`).
     ///
     /// The first `usize` field is the byte position of the unescaped `<`.
@@ -36,14 +171,17 @@ impl error::Error for TextError {}
 impl fmt::Display for TextError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TextError::InvalidAmpersand(pos) => {
-                write!(f, "Found invalid ampersand use at index {}", pos)
+            TextError::CdataSectionClosed(pos) => {
+                write!(f, "Unexpected CDATA section end delimiter at index {}", pos)
+            }
+            TextError::InvalidAmpersand(pos) => write!(f, "Invalid ampersand use at index {}", pos),
+            TextError::InvalidCharacterInCdataSection(pos) => {
+                write!(f, "Invalid character at index {}", pos)
             }
             TextError::UnclosedCdataSection(pos) => {
-                write!(f, "Found unclosed CDATA section at index {}", pos)
+                write!(f, "Unclosed CDATA section at index {}", pos)
             }
-            TextError::UnescapedGt(pos) => write!(f, "Found unescaped `>` at index {}", pos),
-            TextError::UnescapedLt(pos) => write!(f, "Found unescaped `<` at index {}", pos),
+            TextError::UnescapedLt(pos) => write!(f, "Unescaped `<` at index {}", pos),
         }
     }
 }
@@ -56,74 +194,6 @@ impl fmt::Display for TextError {
 pub struct TextStr(str);
 
 impl TextStr {
-    /// Validates the given string, and returns `Ok(())` if the string is valid.
-    fn validate(s: &str) -> Result<(), TextError> {
-        let mut chars = s.chars();
-        while let Some(first) = chars.next() {
-            match first {
-                '<' => {
-                    let following = chars.as_str();
-                    if !following.starts_with("![CDATA[") {
-                        return Err(TextError::UnescapedLt(s.len() - following.len() - 1));
-                    }
-                    // `3`: `"]]>".len()`.
-                    let pos_after_cdata_end = following.find("]]>").ok_or_else(|| {
-                        TextError::UnclosedCdataSection(s.len() - following.len() - 1)
-                    })? + 3;
-                    chars = following[pos_after_cdata_end..].chars();
-                }
-                '>' => return Err(TextError::UnescapedGt(s.len() - chars.as_str().len() - 1)),
-                '&' => {
-                    let following = chars.as_str();
-                    let semicolon_pos = following.find(';').ok_or_else(|| {
-                        TextError::InvalidAmpersand(s.len() - following.len() - 1)
-                    })?;
-                    let before_semicolon = &following[..semicolon_pos];
-                    let mut inner_chars = before_semicolon.chars();
-                    match inner_chars.next() {
-                        Some('#') => {
-                            let after_hash = inner_chars.next().ok_or_else(|| {
-                                TextError::InvalidAmpersand(s.len() - chars.as_str().len() - 1)
-                            })?;
-                            let is_valid_ref = if after_hash == 'x' {
-                                // Expected `"&#x" [0-9a-fA-F]+ ";".
-                                before_semicolon.len() > 1
-                                    && inner_chars.all(|c| c.is_ascii_hexdigit())
-                            } else if after_hash.is_ascii_digit() {
-                                // Expected `"&#" [0-9]+ ";".
-                                inner_chars.all(|c| c.is_ascii_digit())
-                            } else {
-                                false
-                            };
-                            if !is_valid_ref {
-                                return Err(TextError::InvalidAmpersand(
-                                    s.len() - chars.as_str().len() - 1,
-                                ));
-                            }
-                        }
-                        Some(_) => {
-                            if <&NameStr>::try_from(before_semicolon).is_err() {
-                                return Err(TextError::InvalidAmpersand(
-                                    s.len() - chars.as_str().len() - 1,
-                                ));
-                            }
-                        }
-                        None => {
-                            return Err(TextError::InvalidAmpersand(
-                                s.len() - chars.as_str().len() - 1,
-                            ))
-                        }
-                    }
-                    // `1` is length of the following semicolon (`;`).
-                    chars = following[(semicolon_pos + 1)..].chars();
-                }
-                _ => {}
-            }
-        }
-
-        Ok(())
-    }
-
     /// Creates a new `&TextStr` if the given string is valid.
     ///
     /// ```
@@ -137,7 +207,6 @@ impl TextStr {
     /// assert!(TextStr::new_checked("<![CDATA[foo]]>").is_ok());
     /// assert!(TextStr::new_checked("&lt;<![CDATA[&]]>&#x3c;").is_ok());
     ///
-    /// assert_eq!(TextStr::new_checked(">"), Err(TextError::UnescapedGt(0)));
     /// assert_eq!(TextStr::new_checked("<"), Err(TextError::UnescapedLt(0)));
     /// assert_eq!(TextStr::new_checked("&"), Err(TextError::InvalidAmpersand(0)));
     /// assert_eq!(TextStr::new_checked("foo&bar"), Err(TextError::InvalidAmpersand(3)));
@@ -146,7 +215,7 @@ impl TextStr {
     /// assert_eq!(TextStr::new_checked("&#xZ;"), Err(TextError::InvalidAmpersand(0)));
     /// assert_eq!(
     ///     TextStr::new_checked("<![CDATA[<![CDATA[]]>]]>"),
-    ///     Err(TextError::UnescapedGt(23))
+    ///     Err(TextError::CdataSectionClosed(21))
     /// );
     /// ```
     pub fn new_checked(s: &str) -> Result<&Self, TextError> {
@@ -196,7 +265,7 @@ impl_string_types! {
     owned: TextString,
     slice: TextStr,
     error_slice: TextError,
-    validate: TextStr::validate,
+    parse: parse,
     slice_new_unchecked: TextStr::new_unchecked,
 }
 
@@ -208,4 +277,63 @@ impl_string_cmp! {
 impl_string_cmp_to_string! {
     owned: TextString,
     slice: TextStr,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use ParseResult::{
+        CdataSectionClosed, Complete, InvalidAmpersand, InvalidCharacterInCdataSection,
+        UnclosedCdataSection, UnescapedLt,
+    };
+
+    #[test]
+    fn test_parser() {
+        assert_eq!(parse_raw(""), Complete(()));
+        assert_eq!(parse_raw("Valid text"), Complete(()));
+        assert_eq!(parse_raw("foo&amp;bar"), Complete(()));
+        assert_eq!(parse_raw("&lt;&#60;&#x3c;&#x3C;"), Complete(()));
+        assert_eq!(parse_raw("foo<![CDATA[bar]]>baz"), Complete(()));
+        assert_eq!(parse_raw("foo<![CDATA[ ><& ]]>baz"), Complete(()));
+        assert_eq!(parse_raw("foo<![CDATA[bar]]>&baz;qux"), Complete(()));
+        // Existence of stray `>` is syntactically allowed by the spec (see [`CharData`]), but it is
+        // strongly discouraged.
+        //
+        // > The right angle bracket (`>`) may be represented using the string "`&gt;`", and MUST,
+        // > for compatibility, be escaped using either "`&gt;`" or a character reference when it
+        // > appears in > the string "`]]>`" in content, when that string is not marking the end of
+        // > a CDATA section.
+        // >
+        // > --- <https://www.w3.org/TR/2008/REC-xml-20081126/#syntax>
+        assert_eq!(parse_raw("]>"), Complete(()));
+        assert_eq!(parse_raw("foo>bar"), Complete(()));
+        assert_eq!(parse_raw("fo]]]o>bar"), Complete(()));
+        assert_eq!(parse_raw(">"), Complete(()));
+
+        assert_eq!(parse_raw("]]>"), CdataSectionClosed(Partial::new((), 0)),);
+        assert_eq!(parse_raw("]]]>"), CdataSectionClosed(Partial::new((), 1)),);
+        assert_eq!(parse_raw("&"), InvalidAmpersand(Partial::new((), 0)),);
+        assert_eq!(parse_raw("]]]&"), InvalidAmpersand(Partial::new((), 3)),);
+        assert_eq!(parse_raw("foo&bar"), InvalidAmpersand(Partial::new((), 3)),);
+        assert_eq!(
+            parse_raw("foo]]]&bar"),
+            InvalidAmpersand(Partial::new((), 6)),
+        );
+        // Vertical tab is not allowed in CDATA section but allowed in usual text node.
+        assert_eq!(
+            parse_raw("foo\u{B}<![CDATA[vertical\u{B}tab]]>bar"),
+            InvalidCharacterInCdataSection(Partial::new((), 21))
+        );
+        assert_eq!(
+            parse_raw("foo<![CDATA[bar"),
+            UnclosedCdataSection(Partial::new((), 3)),
+        );
+        assert_eq!(
+            parse_raw("foo]]]<![CDATA[bar"),
+            UnclosedCdataSection(Partial::new((), 6))
+        );
+        assert_eq!(parse_raw("<elem>"), UnescapedLt(Partial::new((), 0)),);
+        assert_eq!(parse_raw("]]]<elem>"), UnescapedLt(Partial::new((), 3)),);
+    }
 }

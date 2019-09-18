@@ -10,13 +10,13 @@ macro_rules! impl_string_types {
         owned: $ty_owned:ty,
         slice: $ty_slice:ty,
         error_slice: $ty_error_slice:ty,
-        validate: $validate:expr,
+        parse: $parse:expr,
         slice_new_unchecked: $slice_new_unchecked:expr,
     ) => {
         impl_string_slice! {
             slice: $ty_slice,
             error_slice: $ty_error_slice,
-            validate: $validate,
+            parse: $parse,
             slice_new_unchecked: $slice_new_unchecked,
         }
 
@@ -38,15 +38,14 @@ macro_rules! impl_string_slice {
     (
         slice: $ty_slice:ty,
         error_slice: $ty_error_slice:ty,
-        validate: $validate:expr,
+        parse: $parse:expr,
         slice_new_unchecked: $slice_new_unchecked:expr,
     ) => {
         impl<'a> std::convert::TryFrom<&'a str> for &'a $ty_slice {
             type Error = $ty_error_slice;
 
             fn try_from(s: &'a str) -> Result<Self, Self::Error> {
-                $validate(s)?;
-                Ok(unsafe { $slice_new_unchecked(s) })
+                $parse(s).into_complete_result()
             }
         }
 
