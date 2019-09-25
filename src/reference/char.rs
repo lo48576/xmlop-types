@@ -8,7 +8,7 @@ use std::convert::TryFrom;
 
 use crate::{
     parser::{Partial, PartialMapWithStr},
-    reference::{ParseResult, ReferenceError},
+    reference::{is_xml_char_code_ref, ParseResult, ReferenceError},
 };
 
 /// Parses the given string as character reference.
@@ -65,6 +65,11 @@ pub(crate) fn parse_raw(s: &str) -> ParseResult<()> {
         return ParseResult::Extra(Partial::new((), semicolon_pos + 1));
     }
 
+    // Check if the referred character code is valid XML `Char`.
+    if !is_xml_char_code_ref(s) {
+        return ParseResult::InvalidCharacterReference;
+    }
+
     ParseResult::Complete(())
 }
 
@@ -75,6 +80,7 @@ fn parse(s: &str) -> ParseResult<&CharRefStr> {
         ParseResult::Extra(part) => {
             ParseResult::Extra(part.map_with_str(s, |_, s| unsafe { CharRefStr::new_unchecked(s) }))
         }
+        ParseResult::InvalidCharacterReference => ParseResult::InvalidCharacterReference,
         ParseResult::MissingAmpersand => ParseResult::MissingAmpersand,
         ParseResult::MissingCharacterCode => ParseResult::MissingCharacterCode,
         ParseResult::MissingName => {
@@ -99,7 +105,7 @@ impl CharRefStr {
     /// assert!(CharRefStr::new_checked("&#60;").is_ok());
     /// assert!(CharRefStr::new_checked("&#x3c;").is_ok());
     /// assert!(CharRefStr::new_checked("&#x3C;").is_ok());
-    /// assert!(CharRefStr::new_checked("&#x10FFFF;").is_ok());
+    /// assert!(CharRefStr::new_checked("&#xEFFFF;").is_ok());
     ///
     /// assert_eq!(CharRefStr::new_checked("&lt;"), Err(ReferenceError::MissingCharacterCode));
     /// assert_eq!(
@@ -108,6 +114,18 @@ impl CharRefStr {
     /// );
     ///
     /// assert_eq!(CharRefStr::new_checked("&#60;foo"), Err(ReferenceError::ExtraData(5)));
+    /// assert_eq!(
+    ///     CharRefStr::new_checked("&#11;"),
+    ///     Err(ReferenceError::InvalidCharacterReference)
+    /// );
+    /// assert_eq!(
+    ///     CharRefStr::new_checked("&#xB;"),
+    ///     Err(ReferenceError::InvalidCharacterReference)
+    /// );
+    /// assert_eq!(
+    ///     CharRefStr::new_checked("&#xFFFFFFFFFFFF;"),
+    ///     Err(ReferenceError::InvalidCharacterReference)
+    /// );
     /// assert_eq!(CharRefStr::new_checked(""), Err(ReferenceError::MissingAmpersand));
     /// assert_eq!(CharRefStr::new_checked("foo"), Err(ReferenceError::MissingAmpersand));
     /// assert_eq!(CharRefStr::new_checked("foo&#60;"), Err(ReferenceError::MissingAmpersand));
@@ -185,7 +203,10 @@ impl_string_cmp_to_string! {
 mod tests {
     use super::*;
 
-    use ParseResult::{Complete, Extra, MissingAmpersand, MissingCharacterCode, MissingSemicolon};
+    use ParseResult::{
+        Complete, Extra, InvalidCharacterReference, MissingAmpersand, MissingCharacterCode,
+        MissingSemicolon,
+    };
 
     #[test]
     fn test_reference_parser() {
@@ -199,6 +220,9 @@ mod tests {
 
         assert_eq!(parse_raw("&lt;"), MissingCharacterCode);
 
+        assert_eq!(parse_raw("&#11;"), InvalidCharacterReference);
+        assert_eq!(parse_raw("&#xB;"), InvalidCharacterReference);
+        assert_eq!(parse_raw("&#xFFFFFFFFFFFF;"), InvalidCharacterReference);
         assert_eq!(parse_raw(""), MissingAmpersand);
         assert_eq!(parse_raw("foo"), MissingAmpersand);
         assert_eq!(parse_raw("foo&bar;"), MissingAmpersand);

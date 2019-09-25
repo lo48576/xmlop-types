@@ -42,6 +42,7 @@ fn parse(s: &str) -> ParseResult<&EntityRefStr> {
         ParseResult::Extra(part) => ParseResult::Extra(
             part.map_with_str(s, |_, s| unsafe { EntityRefStr::new_unchecked(s) }),
         ),
+        ParseResult::InvalidCharacterReference => ParseResult::InvalidCharacterReference,
         ParseResult::MissingAmpersand => ParseResult::MissingAmpersand,
         ParseResult::MissingCharacterCode => {
             unreachable!("Should never happen: parsing entity reference")
@@ -69,7 +70,7 @@ impl EntityRefStr {
     /// assert_eq!(EntityRefStr::new_checked("&#60;"), Err(ReferenceError::MissingName));
     /// assert_eq!(EntityRefStr::new_checked("&#x3c;"), Err(ReferenceError::MissingName));
     /// assert_eq!(EntityRefStr::new_checked("&#x3C;"), Err(ReferenceError::MissingName));
-    /// assert_eq!(EntityRefStr::new_checked("&#x10FFFF;"), Err(ReferenceError::MissingName));
+    /// assert_eq!(EntityRefStr::new_checked("&#xEFFFF;"), Err(ReferenceError::MissingName));
     ///
     /// assert_eq!(EntityRefStr::new_checked("&lt;foo"), Err(ReferenceError::ExtraData(4)));
     /// assert_eq!(EntityRefStr::new_checked(""), Err(ReferenceError::MissingAmpersand));

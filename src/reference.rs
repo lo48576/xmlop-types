@@ -6,7 +6,7 @@ use std::{convert::TryFrom, error, fmt};
 
 use crate::{
     name::{self, ParseResult as NameResult},
-    parser::{Partial, PartialMapWithStr},
+    parser::{chars, Partial, PartialMapWithStr},
 };
 
 pub use self::{
@@ -17,6 +17,31 @@ pub use self::{
 mod char;
 mod entity;
 
+/// Checks whether the given char code is XML `Char` or not.
+///
+/// # Precondition
+///
+/// The given string should match `/^&#x[0-9a-fA-F]+;$/` or `/^&#[0-9]+;$/`.
+fn is_xml_char_code_ref(s: &str) -> bool {
+    let len = s.len();
+    // 4: length of "&#9;".
+    assert!(len >= 4);
+    let (begin, base) = if s.as_bytes()[2] == b'x' {
+        (3, 16)
+    } else {
+        (2, 10)
+    };
+    let code = match u32::from_str_radix(&s[begin..(len - 1)], base) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let c = match char::try_from(code) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    chars::is_xml_char(c)
+}
+
 /// Parse result of `Reference`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum ParseResult<T> {
@@ -24,6 +49,10 @@ pub(crate) enum ParseResult<T> {
     Complete(T),
     /// Extra data follows.
     Extra(Partial<T>),
+    /// Invalid character reference or invalid character.
+    ///
+    /// The first `usize` field is the first byte position of the invalid character.
+    InvalidCharacterReference,
     /// Missing the leading ampersand.
     MissingAmpersand,
     /// Missing character code.
@@ -40,6 +69,7 @@ impl<T> ParseResult<T> {
         match self {
             Self::Complete(v) => Ok(v),
             Self::Extra(part) => Err(ReferenceError::ExtraData(part.valid_up_to())),
+            Self::InvalidCharacterReference => Err(ReferenceError::InvalidCharacterReference),
             Self::MissingAmpersand => Err(ReferenceError::MissingAmpersand),
             Self::MissingCharacterCode => Err(ReferenceError::MissingCharacterCode),
             Self::MissingName => Err(ReferenceError::MissingName),
@@ -64,7 +94,7 @@ pub(crate) fn parse_raw(s: &str) -> ParseResult<RefereneceType> {
         /// 3: `"&#x".len()`.
         const HEX_OFFSET: usize = 3;
 
-        match s.as_bytes().get(2) {
+        let (semicolon_pos, ty) = match s.as_bytes().get(2) {
             Some(b'x') => match s[HEX_OFFSET..]
                 .as_bytes()
                 .iter()
@@ -92,7 +122,14 @@ pub(crate) fn parse_raw(s: &str) -> ParseResult<RefereneceType> {
                 None => return ParseResult::MissingSemicolon,
             },
             None => return ParseResult::MissingCharacterCode,
+        };
+        // Check if the referred character code is valid XML `Char`.
+        if (ty == RefereneceType::Dec || ty == RefereneceType::Hex)
+            && !is_xml_char_code_ref(&s[..=semicolon_pos])
+        {
+            return ParseResult::InvalidCharacterReference;
         }
+        (semicolon_pos, ty)
     } else {
         // Expect `Name`.
         match name::parse_raw(&s[1..]) {
@@ -126,6 +163,7 @@ fn parse(s: &str) -> ParseResult<&ReferenceStr> {
         ParseResult::Extra(part) => ParseResult::Extra(
             part.map_with_str(s, |_, s| unsafe { ReferenceStr::new_unchecked(s) }),
         ),
+        ParseResult::InvalidCharacterReference => ParseResult::InvalidCharacterReference,
         ParseResult::MissingAmpersand => ParseResult::MissingAmpersand,
         ParseResult::MissingCharacterCode => ParseResult::MissingCharacterCode,
         ParseResult::MissingName => ParseResult::MissingName,
@@ -152,6 +190,8 @@ pub enum ReferenceError {
     ///
     /// `usize` field is the first byte position of the extra data after `]]>`.
     ExtraData(usize),
+    /// Reference to an invalid character.
+    InvalidCharacterReference,
     /// Missing the leading ampersand.
     MissingAmpersand,
     /// Missing character code.
@@ -168,6 +208,7 @@ impl fmt::Display for ReferenceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ReferenceError::ExtraData(pos) => write!(f, "Extra following data at index {}", pos),
+            ReferenceError::InvalidCharacterReference => f.write_str("Invalid character reference"),
             ReferenceError::MissingAmpersand => f.write_str("Missing ampersand"),
             ReferenceError::MissingCharacterCode => f.write_str("Missing character code"),
             ReferenceError::MissingName => f.write_str("Missing entity name"),
@@ -193,12 +234,25 @@ impl ReferenceStr {
     /// assert!(ReferenceStr::new_checked("&#60;").is_ok());
     /// assert!(ReferenceStr::new_checked("&#x3c;").is_ok());
     /// assert!(ReferenceStr::new_checked("&#x3C;").is_ok());
-    /// assert!(ReferenceStr::new_checked("&#x10FFFF;").is_ok());
+    /// assert!(ReferenceStr::new_checked("&#xEFFFF;").is_ok());
     ///
     /// assert_eq!(ReferenceStr::new_checked("&lt;foo"), Err(ReferenceError::ExtraData(4)));
     /// assert_eq!(ReferenceStr::new_checked("&#60;foo"), Err(ReferenceError::ExtraData(5)));
     /// assert_eq!(ReferenceStr::new_checked("&#x3c;foo"), Err(ReferenceError::ExtraData(6)));
     /// assert_eq!(ReferenceStr::new_checked("&#x3C;foo"), Err(ReferenceError::ExtraData(6)));
+    /// // Vertical tab (U+B) is not allowed to appear in XML document, even if it is char ref.
+    /// assert_eq!(
+    ///     ReferenceStr::new_checked("&#11;"),
+    ///     Err(ReferenceError::InvalidCharacterReference)
+    /// );
+    /// assert_eq!(
+    ///     ReferenceStr::new_checked("&#xB;"),
+    ///     Err(ReferenceError::InvalidCharacterReference)
+    /// );
+    /// assert_eq!(
+    ///     ReferenceStr::new_checked("&#xFFFFFFFFFFFF;"),
+    ///     Err(ReferenceError::InvalidCharacterReference)
+    /// );
     /// assert_eq!(ReferenceStr::new_checked(""), Err(ReferenceError::MissingAmpersand));
     /// assert_eq!(ReferenceStr::new_checked("foo"), Err(ReferenceError::MissingAmpersand));
     /// assert_eq!(ReferenceStr::new_checked("foo&bar;"), Err(ReferenceError::MissingAmpersand));
@@ -278,7 +332,8 @@ mod tests {
     use super::*;
 
     use ParseResult::{
-        Complete, Extra, MissingAmpersand, MissingCharacterCode, MissingName, MissingSemicolon,
+        Complete, Extra, InvalidCharacterReference, MissingAmpersand, MissingCharacterCode,
+        MissingName, MissingSemicolon,
     };
 
     #[test]
@@ -305,6 +360,9 @@ mod tests {
             Extra(Partial::new(RefereneceType::Hex, 6))
         );
 
+        assert_eq!(parse_raw("&#11;"), InvalidCharacterReference);
+        assert_eq!(parse_raw("&#xB;"), InvalidCharacterReference);
+        assert_eq!(parse_raw("&#xFFFFFFFFFFFF;"), InvalidCharacterReference);
         assert_eq!(parse_raw(""), MissingAmpersand);
         assert_eq!(parse_raw("foo"), MissingAmpersand);
         assert_eq!(parse_raw("foo&bar;"), MissingAmpersand);
