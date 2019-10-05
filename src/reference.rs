@@ -6,7 +6,7 @@ use std::{convert::TryFrom, error, fmt};
 
 use crate::{
     name::{self, ParseResult as NameResult},
-    parser::{chars, Partial, PartialMapWithStr},
+    parser::{chars::is_xml_char, Partial, PartialMapWithStr},
 };
 
 pub use self::{
@@ -39,7 +39,7 @@ fn is_xml_char_code_ref(s: &str) -> bool {
         Ok(v) => v,
         Err(_) => return false,
     };
-    chars::is_xml_char(c)
+    is_xml_char(c)
 }
 
 /// Parse result of `Reference`.
