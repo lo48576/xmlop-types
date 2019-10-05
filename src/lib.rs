@@ -16,6 +16,7 @@ mod macros;
 pub mod cdata;
 pub mod cdata_section;
 pub mod char_data;
+pub mod comment;
 pub mod error;
 pub mod name;
 pub mod ncname;
