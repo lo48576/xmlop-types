@@ -97,7 +97,7 @@ impl CdataStr {
     /// Creates a new `&CdataStr` if the given string is valid.
     ///
     /// ```
-    /// # use xmlop_types::cdata::{CdataError, CdataStr};
+    /// # use xmlop_types::cdata_section::{CdataError, CdataStr};
     /// assert!(CdataStr::new_checked("ValidCData").is_ok());
     /// assert!(CdataStr::new_checked("").is_ok());
     ///
@@ -121,7 +121,7 @@ impl CdataStr {
     /// # Examples
     ///
     /// ```
-    /// # use xmlop_types::cdata::CdataStr;
+    /// # use xmlop_types::cdata_section::CdataStr;
     /// let s = CdataStr::new("ValidCData");
     /// ```
     ///

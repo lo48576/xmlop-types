@@ -13,7 +13,9 @@
 use std::{convert::TryFrom, error, fmt};
 
 use crate::{
-    cdata_section::{self, ParseResult as CdataSectionResult},
+    cdata_section::wrapping::{
+        parse_raw as parse_cdata_section, ParseResult as CdataSectionResult,
+    },
     char_data::{self, ParseResult as CharDataResult},
     parser::{Partial, PartialMapWithStr},
     reference::{self, ParseResult as ReferenceResult},
@@ -83,7 +85,7 @@ fn parse_raw(s: &str) -> ParseResult<()> {
                 ReferenceResult::Extra(part) => rest = &rest[part.valid_up_to()..],
                 _ => return ParseResult::InvalidAmpersand(Partial::new((), s.len() - rest.len())),
             },
-            b'<' => match cdata_section::parse_raw(rest) {
+            b'<' => match parse_cdata_section(rest) {
                 CdataSectionResult::Complete(_) => return ParseResult::Complete(()),
                 CdataSectionResult::Extra(part) => rest = &rest[part.valid_up_to()..],
                 CdataSectionResult::InvalidCharacter(pos) => {
