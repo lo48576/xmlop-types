@@ -5,7 +5,7 @@
 use std::{convert::TryFrom, error, fmt};
 
 use crate::{
-    name::{self, ParseResult as NameResult},
+    name::plain::{parse_raw as parse_name, ParseResult as NameResult},
     parser::{chars::is_xml_char, Partial, PartialMapWithStr},
 };
 
@@ -132,7 +132,7 @@ pub(crate) fn parse_raw(s: &str) -> ParseResult<RefereneceType> {
         (semicolon_pos, ty)
     } else {
         // Expect `Name`.
-        match name::parse_raw(&s[1..]) {
+        match parse_name(&s[1..]) {
             NameResult::Complete(()) => return ParseResult::MissingSemicolon,
             NameResult::Empty | NameResult::InvalidCharacter(None) => {
                 return ParseResult::MissingName

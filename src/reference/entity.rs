@@ -7,7 +7,7 @@
 use std::convert::TryFrom;
 
 use crate::{
-    name::{self, ParseResult as NameResult},
+    name::plain::{parse_raw as parse_name, ParseResult as NameResult},
     parser::{Partial, PartialMapWithStr},
     reference::{ParseResult, ReferenceError},
 };
@@ -18,7 +18,7 @@ pub(crate) fn parse_raw(s: &str) -> ParseResult<()> {
         return ParseResult::MissingAmpersand;
     }
     // Expect `Name`.
-    let semicolon_pos = match name::parse_raw(&s[1..]) {
+    let semicolon_pos = match parse_name(&s[1..]) {
         NameResult::Complete(()) => return ParseResult::MissingSemicolon,
         NameResult::Empty | NameResult::InvalidCharacter(None) => return ParseResult::MissingName,
         NameResult::InvalidCharacter(Some(part)) => part.valid_up_to() + 1,
