@@ -8,7 +8,10 @@
 //! [`CData`]: http://www.w3.org/TR/REC-xml/#NT-CData
 //! [`CDSect`]: https://www.w3.org/TR/xml/#NT-CDSect
 
-pub use self::content::{CdataError, CdataStr, CdataString};
+pub use self::{
+    content::{CdataError, CdataStr, CdataString},
+    wrapping::{CdataSectionError, CdataSectionStr, CdataSectionString},
+};
 
 mod content;
 pub(crate) mod wrapping;
