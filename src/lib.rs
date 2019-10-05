@@ -13,7 +13,6 @@
 #[macro_use]
 mod macros;
 
-pub mod cdata;
 pub mod cdata_section;
 pub mod char_data;
 pub mod comment;
