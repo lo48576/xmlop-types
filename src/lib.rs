@@ -22,4 +22,5 @@ pub mod ncname;
 pub(crate) mod parser;
 pub mod qname;
 pub mod reference;
+pub mod text_content;
 pub mod text_node;
