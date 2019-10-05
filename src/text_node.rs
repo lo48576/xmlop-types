@@ -1,7 +1,10 @@
-//! String types for content of XML text nodes, including CDATA section and references.
+//! String types for XML text nodes, including CDATA sections and references.
 //!
-//! `TextStr` and `TextString` contains unprocessed valid `#PCDATA`, which consists of zero or more
-//! entity references, character references, character data (`CData`s), and CDATA sections.
+//! `TextNodeStr` and `TextNodeString` contain unprocessed valid `#PCDATA`s, which consist of zero
+//! or more entity references, character references, character data (`CData`s), and CDATA sections.
+//!
+//! Note that these types do not represent unescaped abstract text content.
+//! They represent raw text nodes.
 //!
 //! The text type is subset of [`content`] in the XML spec.
 //!
@@ -42,18 +45,22 @@ enum ParseResult<T> {
 
 impl<T> ParseResult<T> {
     /// Returns the `Result` regarding only `Complete` as success.
-    fn into_complete_result(self) -> Result<T, TextError> {
+    fn into_complete_result(self) -> Result<T, TextNodeError> {
         match self {
             Self::Complete(v) => Ok(v),
             Self::CdataSectionClosed(part) => {
-                Err(TextError::CdataSectionClosed(part.valid_up_to()))
+                Err(TextNodeError::CdataSectionClosed(part.valid_up_to()))
             }
-            Self::InvalidAmpersand(part) => Err(TextError::InvalidAmpersand(part.valid_up_to())),
-            Self::InvalidCharacter(part) => Err(TextError::InvalidCharacter(part.valid_up_to())),
+            Self::InvalidAmpersand(part) => {
+                Err(TextNodeError::InvalidAmpersand(part.valid_up_to()))
+            }
+            Self::InvalidCharacter(part) => {
+                Err(TextNodeError::InvalidCharacter(part.valid_up_to()))
+            }
             Self::UnclosedCdataSection(part) => {
-                Err(TextError::UnclosedCdataSection(part.valid_up_to()))
+                Err(TextNodeError::UnclosedCdataSection(part.valid_up_to()))
             }
-            Self::UnescapedLt(part) => Err(TextError::UnescapedLt(part.valid_up_to())),
+            Self::UnescapedLt(part) => Err(TextNodeError::UnescapedLt(part.valid_up_to())),
         }
     }
 }
@@ -118,30 +125,32 @@ fn parse_raw(s: &str) -> ParseResult<()> {
 }
 
 /// Parses the given string as XML text.
-fn parse(s: &str) -> ParseResult<&TextStr> {
+fn parse(s: &str) -> ParseResult<&TextNodeStr> {
     match parse_raw(s) {
-        ParseResult::Complete(()) => ParseResult::Complete(unsafe { TextStr::new_unchecked(s) }),
+        ParseResult::Complete(()) => {
+            ParseResult::Complete(unsafe { TextNodeStr::new_unchecked(s) })
+        }
         ParseResult::CdataSectionClosed(part) => ParseResult::CdataSectionClosed(
-            part.map_with_str(s, |_, s| unsafe { TextStr::new_unchecked(s) }),
+            part.map_with_str(s, |_, s| unsafe { TextNodeStr::new_unchecked(s) }),
         ),
         ParseResult::InvalidAmpersand(part) => ParseResult::InvalidAmpersand(
-            part.map_with_str(s, |_, s| unsafe { TextStr::new_unchecked(s) }),
+            part.map_with_str(s, |_, s| unsafe { TextNodeStr::new_unchecked(s) }),
         ),
         ParseResult::InvalidCharacter(part) => ParseResult::InvalidCharacter(
-            part.map_with_str(s, |_, s| unsafe { TextStr::new_unchecked(s) }),
+            part.map_with_str(s, |_, s| unsafe { TextNodeStr::new_unchecked(s) }),
         ),
         ParseResult::UnclosedCdataSection(part) => ParseResult::UnclosedCdataSection(
-            part.map_with_str(s, |_, s| unsafe { TextStr::new_unchecked(s) }),
+            part.map_with_str(s, |_, s| unsafe { TextNodeStr::new_unchecked(s) }),
         ),
         ParseResult::UnescapedLt(part) => ParseResult::UnescapedLt(
-            part.map_with_str(s, |_, s| unsafe { TextStr::new_unchecked(s) }),
+            part.map_with_str(s, |_, s| unsafe { TextNodeStr::new_unchecked(s) }),
         ),
     }
 }
 
 /// Error for text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum TextError {
+pub enum TextNodeError {
     /// CDATA section closed unexpectedly (while not opened).
     ///
     /// The first `usize` field is the first byte position of the CDATA section end delimiter
@@ -168,85 +177,87 @@ pub enum TextError {
     UnescapedLt(usize),
 }
 
-impl error::Error for TextError {}
+impl error::Error for TextNodeError {}
 
-impl fmt::Display for TextError {
+impl fmt::Display for TextNodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TextError::CdataSectionClosed(pos) => {
+            TextNodeError::CdataSectionClosed(pos) => {
                 write!(f, "Unexpected CDATA section end delimiter at index {}", pos)
             }
-            TextError::InvalidAmpersand(pos) => write!(f, "Invalid ampersand use at index {}", pos),
-            TextError::InvalidCharacter(pos) => write!(f, "Invalid character at index {}", pos),
-            TextError::UnclosedCdataSection(pos) => {
+            TextNodeError::InvalidAmpersand(pos) => {
+                write!(f, "Invalid ampersand use at index {}", pos)
+            }
+            TextNodeError::InvalidCharacter(pos) => write!(f, "Invalid character at index {}", pos),
+            TextNodeError::UnclosedCdataSection(pos) => {
                 write!(f, "Unclosed CDATA section at index {}", pos)
             }
-            TextError::UnescapedLt(pos) => write!(f, "Unescaped `<` at index {}", pos),
+            TextNodeError::UnescapedLt(pos) => write!(f, "Unescaped `<` at index {}", pos),
         }
     }
 }
 
-/// String slice for text.
+/// String slice for text node.
 ///
 /// See module documentation for detail.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
-pub struct TextStr(str);
+pub struct TextNodeStr(str);
 
-impl TextStr {
-    /// Creates a new `&TextStr` if the given string is valid.
+impl TextNodeStr {
+    /// Creates a new `&TextNodeStr` if the given string is valid.
     ///
     /// ```
-    /// # use xmlop_types::text::{TextError, TextStr};
-    /// assert!(TextStr::new_checked("Valid text").is_ok());
-    /// assert!(TextStr::new_checked("").is_ok());
-    /// assert!(TextStr::new_checked("&lt;").is_ok());
-    /// assert!(TextStr::new_checked("&#60;").is_ok());
-    /// assert!(TextStr::new_checked("&#x3c;").is_ok());
-    /// assert!(TextStr::new_checked("&#x3C;").is_ok());
-    /// assert!(TextStr::new_checked("<![CDATA[foo]]>").is_ok());
-    /// assert!(TextStr::new_checked("&lt;<![CDATA[&]]>&#x3c;").is_ok());
+    /// # use xmlop_types::text_node::{TextNodeError, TextNodeStr};
+    /// assert!(TextNodeStr::new_checked("Valid text").is_ok());
+    /// assert!(TextNodeStr::new_checked("").is_ok());
+    /// assert!(TextNodeStr::new_checked("&lt;").is_ok());
+    /// assert!(TextNodeStr::new_checked("&#60;").is_ok());
+    /// assert!(TextNodeStr::new_checked("&#x3c;").is_ok());
+    /// assert!(TextNodeStr::new_checked("&#x3C;").is_ok());
+    /// assert!(TextNodeStr::new_checked("<![CDATA[foo]]>").is_ok());
+    /// assert!(TextNodeStr::new_checked("&lt;<![CDATA[&]]>&#x3c;").is_ok());
     ///
-    /// assert_eq!(TextStr::new_checked("<"), Err(TextError::UnescapedLt(0)));
-    /// assert_eq!(TextStr::new_checked("&"), Err(TextError::InvalidAmpersand(0)));
-    /// assert_eq!(TextStr::new_checked("foo&bar"), Err(TextError::InvalidAmpersand(3)));
-    /// assert_eq!(TextStr::new_checked("&foo bar;"), Err(TextError::InvalidAmpersand(0)));
-    /// assert_eq!(TextStr::new_checked("&#3C;"), Err(TextError::InvalidAmpersand(0)));
-    /// assert_eq!(TextStr::new_checked("&#xZ;"), Err(TextError::InvalidAmpersand(0)));
+    /// assert_eq!(TextNodeStr::new_checked("<"), Err(TextNodeError::UnescapedLt(0)));
+    /// assert_eq!(TextNodeStr::new_checked("&"), Err(TextNodeError::InvalidAmpersand(0)));
+    /// assert_eq!(TextNodeStr::new_checked("foo&bar"), Err(TextNodeError::InvalidAmpersand(3)));
+    /// assert_eq!(TextNodeStr::new_checked("&foo bar;"), Err(TextNodeError::InvalidAmpersand(0)));
+    /// assert_eq!(TextNodeStr::new_checked("&#3C;"), Err(TextNodeError::InvalidAmpersand(0)));
+    /// assert_eq!(TextNodeStr::new_checked("&#xZ;"), Err(TextNodeError::InvalidAmpersand(0)));
     /// assert_eq!(
-    ///     TextStr::new_checked("<![CDATA[<![CDATA[]]>]]>"),
-    ///     Err(TextError::CdataSectionClosed(21))
+    ///     TextNodeStr::new_checked("<![CDATA[<![CDATA[]]>]]>"),
+    ///     Err(TextNodeError::CdataSectionClosed(21))
     /// );
     /// ```
-    pub fn new_checked(s: &str) -> Result<&Self, TextError> {
+    pub fn new_checked(s: &str) -> Result<&Self, TextNodeError> {
         <&Self>::try_from(s)
     }
 
-    /// Creates a new `&TextStr` assuming the given string is valid.
+    /// Creates a new `&TextNodeStr` assuming the given string is valid.
     ///
     /// # Panics
     ///
-    /// This panics if the given string is not valid text content.
+    /// This panics if the given string is not valid text node.
     /// If you are not sure the string is valid, you should use [`new_checked()`].
     ///
     /// # Examples
     ///
     /// ```
-    /// # use xmlop_types::text::TextStr;
-    /// let s = TextStr::new("Valid text");
+    /// # use xmlop_types::text_node::TextNodeStr;
+    /// let s = TextNodeStr::new("Valid text");
     /// ```
     ///
     /// [`new_checked()`]: #method.new_checked
     pub fn new(s: &str) -> &Self {
         <&Self>::try_from(s)
-            .unwrap_or_else(|e| panic!("The given string is not valid text content: {}", e))
+            .unwrap_or_else(|e| panic!("The given string is not valid as a text node: {}", e))
     }
 
-    /// Creates a new `&TextStr` without validation.
+    /// Creates a new `&TextNodeStr` without validation.
     ///
     /// # Safety
     ///
-    /// The given string should be valid text content.
+    /// The given string should be valid text node.
     pub unsafe fn new_unchecked(s: &str) -> &Self {
         &*(s as *const str as *const Self)
     }
@@ -257,26 +268,26 @@ impl TextStr {
     }
 }
 
-/// Owned string for text.
+/// Owned string for text node.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TextString(Box<TextStr>);
+pub struct TextNodeString(Box<TextNodeStr>);
 
 impl_string_types! {
-    owned: TextString,
-    slice: TextStr,
-    error_slice: TextError,
+    owned: TextNodeString,
+    slice: TextNodeStr,
+    error_slice: TextNodeError,
     parse: parse,
-    slice_new_unchecked: TextStr::new_unchecked,
+    slice_new_unchecked: TextNodeStr::new_unchecked,
 }
 
 impl_string_cmp! {
-    owned: TextString,
-    slice: TextStr,
+    owned: TextNodeString,
+    slice: TextNodeStr,
 }
 
 impl_string_cmp_to_string! {
-    owned: TextString,
-    slice: TextStr,
+    owned: TextNodeString,
+    slice: TextNodeStr,
 }
 
 #[cfg(test)]
