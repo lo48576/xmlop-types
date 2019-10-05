@@ -7,12 +7,11 @@
 use std::{convert::TryFrom, error, fmt};
 
 use crate::{
-    name::{NameStr, NameString},
+    name::{NameStr, NameString, QnameStr, QnameString},
     parser::{
         chars::{is_name_char_except_colon, is_name_start_char_except_colon},
         Partial, PartialMapWithStr,
     },
-    qname::{QnameStr, QnameString},
 };
 
 /// Parse result of `NCName`.
@@ -102,7 +101,7 @@ impl NcnameStr {
     /// Creates a new `&NcnameStr` if the given string is valid.
     ///
     /// ```
-    /// # use xmlop_types::ncname::{NcnameError, NcnameStr};
+    /// # use xmlop_types::name::{NcnameError, NcnameStr};
     /// assert!(NcnameStr::new_checked("ValidNCName").is_ok());
     ///
     /// assert_eq!(NcnameStr::new_checked(""), Err(NcnameError::Empty));
@@ -124,7 +123,7 @@ impl NcnameStr {
     /// # Examples
     ///
     /// ```
-    /// # use xmlop_types::ncname::NcnameStr;
+    /// # use xmlop_types::name::NcnameStr;
     /// let name = NcnameStr::new("ValidNCName");
     /// ```
     ///
@@ -153,14 +152,14 @@ impl NcnameStr {
 
     /// Converts the reference to [`&QnameStr`].
     ///
-    /// [`&QnameStr`]: ../qname/struct.QnameStr.html
+    /// [`&QnameStr`]: struct.QnameStr.html
     pub fn as_qname(&self) -> &QnameStr {
         self.as_ref()
     }
 
     /// Converts the reference to [`&NameStr`].
     ///
-    /// [`&NameStr`]: ../qname/struct.NameStr.html
+    /// [`&NameStr`]: struct.NameStr.html
     pub fn as_name(&self) -> &NameStr {
         self.as_ref()
     }

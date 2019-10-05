@@ -7,8 +7,10 @@
 use std::{convert::TryFrom, error, fmt};
 
 use crate::{
-    name::{NameStr, NameString},
-    ncname::{self, NcnameStr, NcnameString, ParseResult as NcnameResult},
+    name::{
+        ncname::{parse_raw as parse_ncname, NcnameStr, NcnameString, ParseResult as NcnameResult},
+        NameStr, NameString,
+    },
     parser::{Partial, PartialMapWithStr},
 };
 
@@ -45,7 +47,7 @@ impl<T> ParseResult<T> {
 /// Parses the given string as `QName`.
 fn parse_raw(s: &str) -> ParseResult<()> {
     // Parse the first `NCName`.
-    let first_len = match ncname::parse_raw(s) {
+    let first_len = match parse_ncname(s) {
         NcnameResult::Complete(()) => return ParseResult::Complete(()),
         NcnameResult::Empty => return ParseResult::Empty,
         NcnameResult::InvalidCharacter(None) => return ParseResult::InvalidCharacter(None, 0),
@@ -63,7 +65,7 @@ fn parse_raw(s: &str) -> ParseResult<()> {
     let local_offset = first_len + 1;
     let rest = &s[local_offset..];
     // Parse the second `NCName`.
-    match ncname::parse_raw(rest) {
+    match parse_ncname(rest) {
         NcnameResult::Complete(()) => ParseResult::Complete(()),
         NcnameResult::Empty => ParseResult::EmptyLocalPart(Partial::new((), first_len)),
         NcnameResult::InvalidCharacter(None) => {
@@ -142,7 +144,7 @@ impl QnameStr {
     /// Creates a new `&QnameStr` if the given string is valid.
     ///
     /// ```
-    /// # use xmlop_types::qname::{QnameError, QnameStr};
+    /// # use xmlop_types::name::{QnameError, QnameStr};
     /// assert!(QnameStr::new_checked("ValidQName").is_ok());
     /// assert!(QnameStr::new_checked("foo:bar").is_ok());
     ///
@@ -167,7 +169,7 @@ impl QnameStr {
     /// # Examples
     ///
     /// ```
-    /// # use xmlop_types::qname::QnameStr;
+    /// # use xmlop_types::name::QnameStr;
     /// let name = QnameStr::new("ValidQName");
     /// ```
     ///
@@ -196,7 +198,7 @@ impl QnameStr {
 
     /// Converts the reference to [`&NameStr`].
     ///
-    /// [`&NameStr`]: ../qname/struct.NameStr.html
+    /// [`&NameStr`]: struct.NameStr.html
     pub fn as_name(&self) -> &NameStr {
         self.as_ref()
     }
@@ -206,7 +208,7 @@ impl QnameStr {
     /// # Examples
     ///
     /// ```
-    /// # use xmlop_types::{ncname::NcnameStr, qname::QnameStr};
+    /// # use xmlop_types::name::{NcnameStr, QnameStr};
     ///
     /// assert_eq!(QnameStr::new("foo").prefix_and_local_part(), (None, NcnameStr::new("foo")));
     /// assert_eq!(
@@ -242,7 +244,7 @@ impl QnameStr {
     /// # Examples
     ///
     /// ```
-    /// # use xmlop_types::{ncname::NcnameStr, qname::QnameStr};
+    /// # use xmlop_types::name::{NcnameStr, QnameStr};
     ///
     /// assert_eq!(QnameStr::new("foo").prefix(), None);
     /// assert_eq!(QnameStr::new("foo:bar").prefix(), Some(NcnameStr::new("foo")));
@@ -260,7 +262,7 @@ impl QnameStr {
     /// # Examples
     ///
     /// ```
-    /// # use xmlop_types::{ncname::NcnameStr, qname::QnameStr};
+    /// # use xmlop_types::name::{NcnameStr, QnameStr};
     ///
     /// assert_eq!(QnameStr::new("foo").local_part(), NcnameStr::new("foo"));
     /// assert_eq!(QnameStr::new("foo:bar").local_part(), NcnameStr::new("bar"));
@@ -305,7 +307,7 @@ impl QnameString {
     ///
     /// ```
     /// use std::convert::TryFrom;
-    /// # use xmlop_types::{ncname::NcnameStr, qname::QnameString};
+    /// # use xmlop_types::name::{NcnameStr, QnameString};
     ///
     /// let (foo_prefix, foo_local) = QnameString::try_from("foo")
     ///     .expect("Should never fail")
