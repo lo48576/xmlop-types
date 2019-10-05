@@ -6,7 +6,7 @@
 
 use std::{convert::TryFrom, error, fmt};
 
-use crate::parser::{Partial, PartialMapWithStr};
+use crate::parser::{chars::is_xml_char, Partial, PartialMapWithStr};
 
 /// Parse result of `CharData`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -15,6 +15,8 @@ pub(crate) enum ParseResult<T> {
     Complete(T),
     /// CDATA section closed unexpectedly.
     CdataSectionClosed(Partial<T>),
+    /// Invalid Character.
+    InvalidCharacter(Partial<T>),
     /// Unexpected ampersand.
     UnexpectedAmpersand(Partial<T>),
     /// Unexpected lt (`<`) symbol.
@@ -28,6 +30,9 @@ impl<T> ParseResult<T> {
             Self::Complete(v) => Ok(v),
             Self::CdataSectionClosed(part) => {
                 Err(CharDataError::CdataSectionClosed(part.valid_up_to()))
+            }
+            Self::InvalidCharacter(part) => {
+                Err(CharDataError::InvalidCharacter(part.valid_up_to()))
             }
             Self::UnexpectedAmpersand(part) => {
                 Err(CharDataError::UnexpectedAmpersand(part.valid_up_to()))
@@ -48,28 +53,29 @@ pub(crate) fn parse_raw(s: &str) -> ParseResult<()> {
     // >
     // > --- <https://www.w3.org/TR/2008/REC-xml-20081126/#syntax>
     let mut rest = s;
-    while let Some(rest_pos) = rest
-        .as_bytes()
-        .iter()
-        .position(|&b| b == b'&' || b == b'<' || b == b']')
+    while let Some((rest_pos, c)) = rest
+        .char_indices()
+        .find(|&(_, c)| c == '&' || c == '<' || c == ']' || !is_xml_char(c))
     {
         let pos = s.len() - rest.len() + rest_pos;
-        match rest.as_bytes()[rest_pos] {
-            b'&' => {
+        match c {
+            '&' => {
                 return ParseResult::UnexpectedAmpersand(Partial::new((), pos));
             }
-            b'<' => {
-                let pos = s.len() - rest.len() + rest_pos;
+            '<' => {
                 return ParseResult::UnexpectedLt(Partial::new((), pos));
             }
-            b']' => {
+            ']' => {
                 let next_rest = &s[(pos + 1)..];
                 if next_rest.starts_with("]>") {
                     return ParseResult::CdataSectionClosed(Partial::new((), pos));
                 }
                 rest = next_rest;
             }
-            _ => unreachable!("Not finding that"),
+            _c => {
+                debug_assert!(!is_xml_char(_c));
+                return ParseResult::InvalidCharacter(Partial::new((), pos));
+            }
         }
     }
 
@@ -83,6 +89,9 @@ fn parse(s: &str) -> ParseResult<&CharDataStr> {
             ParseResult::Complete(unsafe { CharDataStr::new_unchecked(s) })
         }
         ParseResult::CdataSectionClosed(part) => ParseResult::CdataSectionClosed(
+            part.map_with_str(s, |_, s| unsafe { CharDataStr::new_unchecked(s) }),
+        ),
+        ParseResult::InvalidCharacter(part) => ParseResult::InvalidCharacter(
             part.map_with_str(s, |_, s| unsafe { CharDataStr::new_unchecked(s) }),
         ),
         ParseResult::UnexpectedAmpersand(part) => ParseResult::UnexpectedAmpersand(
@@ -101,6 +110,10 @@ pub enum CharDataError {
     ///
     /// `usize` field is the first byte position of the closing sequence `]]>`.
     CdataSectionClosed(usize),
+    /// Found invalid character.
+    ///
+    /// `usize` field is the first byte position of the invalid character.
+    InvalidCharacter(usize),
     /// Unexpected ampersand.
     ///
     /// `usize` field is the first byte position of the character.
@@ -119,6 +132,7 @@ impl fmt::Display for CharDataError {
             CharDataError::CdataSectionClosed(pos) => {
                 write!(f, "CDATA section closed unexpectedly at index {}", pos)
             }
+            CharDataError::InvalidCharacter(pos) => write!(f, "Invalid character at index {}", pos),
             CharDataError::UnexpectedAmpersand(pos) => {
                 write!(f, "Unexpected ampersand character at index {}", pos)
             }
@@ -225,7 +239,9 @@ impl_string_cmp_to_string! {
 mod tests {
     use super::*;
 
-    use ParseResult::{CdataSectionClosed, Complete, UnexpectedAmpersand, UnexpectedLt};
+    use ParseResult::{
+        CdataSectionClosed, Complete, InvalidCharacter, UnexpectedAmpersand, UnexpectedLt,
+    };
 
     #[test]
     fn test_parser() {
@@ -246,6 +262,10 @@ mod tests {
         assert_eq!(parse_raw("]]>"), CdataSectionClosed(Partial::new((), 0)));
         assert_eq!(parse_raw("]]]>"), CdataSectionClosed(Partial::new((), 1)));
         assert_eq!(parse_raw("foo]]>"), CdataSectionClosed(Partial::new((), 3)));
+        assert_eq!(
+            parse_raw("foo\u{B}bar"),
+            InvalidCharacter(Partial::new((), 3))
+        );
         assert_eq!(parse_raw("&lt;"), UnexpectedAmpersand(Partial::new((), 0)));
         assert_eq!(
             parse_raw("foo&bar"),

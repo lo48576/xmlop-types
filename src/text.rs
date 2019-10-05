@@ -28,8 +28,8 @@ enum ParseResult<T> {
     /// This error can be caused by unclosed reference (entity reference and character reference)
     /// or invalid (non-`Name`) string following `&`.
     InvalidAmpersand(Partial<T>),
-    /// Invalid character in CDATA section.
-    InvalidCharacterInCdataSection(Partial<T>),
+    /// Invalid character.
+    InvalidCharacter(Partial<T>),
     /// Unclosed CDATA section.
     ///
     /// The first `usize` field is the byte position of the starting `<`.
@@ -49,9 +49,7 @@ impl<T> ParseResult<T> {
                 Err(TextError::CdataSectionClosed(part.valid_up_to()))
             }
             Self::InvalidAmpersand(part) => Err(TextError::InvalidAmpersand(part.valid_up_to())),
-            Self::InvalidCharacterInCdataSection(part) => Err(
-                TextError::InvalidCharacterInCdataSection(part.valid_up_to()),
-            ),
+            Self::InvalidCharacter(part) => Err(TextError::InvalidCharacter(part.valid_up_to())),
             Self::UnclosedCdataSection(part) => {
                 Err(TextError::UnclosedCdataSection(part.valid_up_to()))
             }
@@ -82,7 +80,7 @@ fn parse_raw(s: &str) -> ParseResult<()> {
                 CdataSectionResult::Complete(_) => return ParseResult::Complete(()),
                 CdataSectionResult::Extra(part) => rest = &rest[part.valid_up_to()..],
                 CdataSectionResult::InvalidCharacter(pos) => {
-                    return ParseResult::InvalidCharacterInCdataSection(Partial::new(
+                    return ParseResult::InvalidCharacter(Partial::new(
                         (),
                         s.len() - rest.len() + pos,
                     ))
@@ -105,6 +103,12 @@ fn parse_raw(s: &str) -> ParseResult<()> {
                         s.len() - rest.len() + part.valid_up_to(),
                     ))
                 }
+                CharDataResult::InvalidCharacter(part) => {
+                    return ParseResult::InvalidCharacter(Partial::new(
+                        (),
+                        s.len() - rest.len() + part.valid_up_to(),
+                    ))
+                }
                 CharDataResult::UnexpectedAmpersand(part) | CharDataResult::UnexpectedLt(part) => {
                     rest = &rest[part.valid_up_to()..]
                 }
@@ -123,11 +127,9 @@ fn parse(s: &str) -> ParseResult<&TextStr> {
         ParseResult::InvalidAmpersand(part) => ParseResult::InvalidAmpersand(
             part.map_with_str(s, |_, s| unsafe { TextStr::new_unchecked(s) }),
         ),
-        ParseResult::InvalidCharacterInCdataSection(part) => {
-            ParseResult::InvalidCharacterInCdataSection(
-                part.map_with_str(s, |_, s| unsafe { TextStr::new_unchecked(s) }),
-            )
-        }
+        ParseResult::InvalidCharacter(part) => ParseResult::InvalidCharacter(
+            part.map_with_str(s, |_, s| unsafe { TextStr::new_unchecked(s) }),
+        ),
         ParseResult::UnclosedCdataSection(part) => ParseResult::UnclosedCdataSection(
             part.map_with_str(s, |_, s| unsafe { TextStr::new_unchecked(s) }),
         ),
@@ -152,10 +154,10 @@ pub enum TextError {
     ///
     /// The first `usize` field is the byte position of the starting `&`.
     InvalidAmpersand(usize),
-    /// Invalid character in CDATA section.
+    /// Invalid character.
     ///
     /// The first `usize` field is the byte position of the invalid character.
-    InvalidCharacterInCdataSection(usize),
+    InvalidCharacter(usize),
     /// Unclosed CDATA section.
     ///
     /// The first `usize` field is the byte position of the starting `<`.
@@ -175,9 +177,7 @@ impl fmt::Display for TextError {
                 write!(f, "Unexpected CDATA section end delimiter at index {}", pos)
             }
             TextError::InvalidAmpersand(pos) => write!(f, "Invalid ampersand use at index {}", pos),
-            TextError::InvalidCharacterInCdataSection(pos) => {
-                write!(f, "Invalid character at index {}", pos)
-            }
+            TextError::InvalidCharacter(pos) => write!(f, "Invalid character at index {}", pos),
             TextError::UnclosedCdataSection(pos) => {
                 write!(f, "Unclosed CDATA section at index {}", pos)
             }
@@ -284,8 +284,8 @@ mod tests {
     use super::*;
 
     use ParseResult::{
-        CdataSectionClosed, Complete, InvalidAmpersand, InvalidCharacterInCdataSection,
-        UnclosedCdataSection, UnescapedLt,
+        CdataSectionClosed, Complete, InvalidAmpersand, InvalidCharacter, UnclosedCdataSection,
+        UnescapedLt,
     };
 
     #[test]
@@ -320,10 +320,14 @@ mod tests {
             parse_raw("foo]]]&bar"),
             InvalidAmpersand(Partial::new((), 6)),
         );
-        // Vertical tab is not allowed in CDATA section but allowed in usual text node.
+        // Vertical tab is not allowed.
         assert_eq!(
-            parse_raw("foo\u{B}<![CDATA[vertical\u{B}tab]]>bar"),
-            InvalidCharacterInCdataSection(Partial::new((), 21))
+            parse_raw("foo\u{B}bar"),
+            InvalidCharacter(Partial::new((), 3))
+        );
+        assert_eq!(
+            parse_raw("<![CDATA[vertical\u{B}tab]]>bar"),
+            InvalidCharacter(Partial::new((), 17))
         );
         assert_eq!(
             parse_raw("foo<![CDATA[bar"),
