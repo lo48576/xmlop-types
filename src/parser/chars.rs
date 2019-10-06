@@ -120,3 +120,13 @@ pub(crate) fn is_name_start_char(c: char) -> bool {
         _ => false,
     }
 }
+
+/// Checks if the given character is [`S`] (whitespace).
+///
+/// [`S`]: https://www.w3.org/TR/xml/#NT-S
+pub(crate) fn is_xml_ws(c: char) -> bool {
+    match c {
+        ' ' | '\t' | '\r' | '\n' => true,
+        _ => false,
+    }
+}

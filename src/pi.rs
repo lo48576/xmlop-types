@@ -4,6 +4,10 @@
 //!
 //! [pi]: https://www.w3.org/TR/xml/#sec-pi
 
-pub use self::target::{PiTargetError, PiTargetStr, PiTargetString};
+pub use self::{
+    body::{PiBodyError, PiBodyStr, PiBodyString},
+    target::{PiTargetError, PiTargetStr, PiTargetString},
+};
 
+mod body;
 mod target;
