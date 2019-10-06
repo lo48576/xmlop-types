@@ -1,6 +1,6 @@
 # xmlop-types
 
-[![Build Status](https://travis-ci.org/lo48576/xmlop-types.svg?branch=develop)](https://travis-ci.org/lo48576/xmlop-types)
+[![Build Status](https://travis-ci.com/lo48576/xmlop-types.svg?branch=develop)](https://travis-ci.com/lo48576/xmlop-types)
 ![Minimum rustc version: 1.37](https://img.shields.io/badge/rustc-1.37+-lightgray.svg)
 
 
