@@ -20,6 +20,7 @@ pub mod comment;
 pub mod error;
 pub mod name;
 pub(crate) mod parser;
+pub mod pi;
 pub mod reference;
 pub mod text_content;
 pub mod text_node;
